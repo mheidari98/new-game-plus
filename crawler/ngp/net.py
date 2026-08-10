@@ -28,6 +28,11 @@ from .ratelimit import AdaptiveLimiter
 REFUSAL_STATUSES = (403, 429)
 RETRY_STATUSES = (408, 429, 403, 500, 502, 503, 504)
 
+# Everything that can go wrong before the host answers: dropped connection,
+# timeout, DNS. Re-exported because the single-client invariant stops any
+# other module -- tests included -- importing an HTTP library.
+TransportFailure = httpx.TransportError
+
 
 @dataclass
 class Response:
@@ -44,8 +49,9 @@ class Response:
 
 
 class HttpError(RuntimeError):
-    def __init__(self, status: int, url: str, body: str):
-        super().__init__(f"HTTP {status} for {url}: {body[:200]}")
+    def __init__(self, status: int | None, url: str, body: str):
+        label = f"HTTP {status}" if status else "transport failure"
+        super().__init__(f"{label} for {url}: {body[:200]}")
         self.status = status
         self.url = url
 
@@ -124,7 +130,12 @@ class HttpClient:
         def attempt():
             self.limiter.wait()
             self.stats["requests"] += 1
-            resp = self._transport(method, url, sent, body, self._timeout, proxies)
+            try:
+                resp = self._transport(method, url, sent, body, self._timeout, proxies)
+            except TransportFailure as exc:
+                # The host never answered, so this says nothing about our pace.
+                # Retry it like a 502 rather than losing the row.
+                raise _Retryable(None, url, str(exc)) from exc
 
             if resp.status in REFUSAL_STATUSES:
                 self.stats["refusals"] += 1

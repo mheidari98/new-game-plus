@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { finalScore, rank, type Weights } from './score';
+import { dealScore, finalScore, rank, type Weights } from './score';
 
 // Mirrors crawler/weights.toml, which is copied into index.json as
 // meta.weights. The browser reads weights from there, never from a constant
 // of its own -- that is what stops the site and crawler drifting.
 const weights: Weights = {
   final: { quality: 0.45, deal: 0.3, value: 0.25 },
-  deal: { discount_depth: 0.6, price_anchor: 0.4 },
+  deal: {
+    discount_depth: 0.4,
+    price_anchor: 0.25,
+    vs_historical_min: 0.2,
+    vs_typical_sale: 0.15,
+  },
   adjust: {
     psplus_extra: 0.3,
     psplus_classics: 0.85,
@@ -110,6 +115,47 @@ describe('adjustments', () => {
              plus_extra: true, release_year: 2005, platforms: ['PS4'] }),
       weights, { hasPlusExtra: true }, 2026);
     expect(s).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('dealScore with missing price history', () => {
+  // Price history starts when this project did. For most games the two
+  // history terms are null for a long time, and scoring them zero would
+  // punish a game for our missing data rather than for its price.
+  it('drops the history terms and renormalises the rest', () => {
+    const g = game({ discount_depth: 80, price_anchor: 40 });
+    // (0.4*80 + 0.25*40) / 0.65
+    expect(dealScore(g, weights)).toBeCloseTo(64.615, 3);
+  });
+
+  it('does not score a game lower for our missing history', () => {
+    const noHistory = dealScore(game({ discount_depth: 90, price_anchor: 90 }), weights);
+    const withHistory = dealScore(
+      game({ discount_depth: 90, price_anchor: 90,
+             vs_historical_min: 90, vs_typical_sale: 90 }),
+      weights,
+    );
+    expect(noHistory).toBeCloseTo(withHistory, 6);
+  });
+
+  it('uses the history terms once they exist', () => {
+    const atLow = dealScore(
+      game({ vs_historical_min: 100, vs_typical_sale: 100 }), weights);
+    const wellAbove = dealScore(
+      game({ vs_historical_min: 10, vs_typical_sale: 10 }), weights);
+    expect(atLow).toBeGreaterThan(wellAbove);
+  });
+
+  it('treats an explicit null as absent, not as zero', () => {
+    const nulled = dealScore(
+      game({ vs_historical_min: null, vs_typical_sale: null }), weights);
+    expect(nulled).toBe(dealScore(game(), weights));
+  });
+
+  it('is zero when every weight is zero rather than dividing by zero', () => {
+    const zeroed = { ...weights, deal: { discount_depth: 0, price_anchor: 0,
+                                         vs_historical_min: 0, vs_typical_sale: 0 } };
+    expect(dealScore(game(), zeroed)).toBe(0);
   });
 });
 

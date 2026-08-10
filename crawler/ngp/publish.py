@@ -32,6 +32,10 @@ _SCALARS = [
     "id", "name", "price_cents", "base_cents", "discount_pct", "is_free",
     "plus_extra", "plus_classics", "local_players", "dualsense",
     "release_year", "critic_score", "quality", "discount_depth", "price_anchor",
+    # Null until this project has recorded enough prices for the game. The
+    # browser drops a null term and renormalises the rest, so a game is never
+    # marked down for history we do not have.
+    "vs_historical_min", "vs_typical_sale",
 ]
 _DICTED = ["genres", "esrb", "platforms", "tier", "psvr2", "evidence"]
 _MULTI = {"genres", "platforms"}      # lists per row; the rest are single values

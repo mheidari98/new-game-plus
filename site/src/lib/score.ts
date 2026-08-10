@@ -14,7 +14,12 @@
 
 export interface Weights {
   final: { quality: number; deal: number; value: number };
-  deal: { discount_depth: number; price_anchor: number };
+  deal: {
+    discount_depth: number;
+    price_anchor: number;
+    vs_historical_min: number;
+    vs_typical_sale: number;
+  };
   adjust: {
     psplus_extra: number;
     psplus_classics: number;
@@ -30,6 +35,10 @@ export interface Game {
   quality: number;
   discount_depth: number;
   price_anchor: number;
+  /** Both null until this project has recorded enough prices for the game.
+   *  Null means "no evidence", which is dropped, not "scores zero". */
+  vs_historical_min?: number | null;
+  vs_typical_sale?: number | null;
   price_cents: number;
   plus_extra: boolean;
   plus_classics: boolean;
@@ -52,15 +61,33 @@ function valueScore(game: Game): number {
   return clamp((q * q * 60 * 100) / (game.price_cents / 100 + 4));
 }
 
+/** Blend the deal terms, dropping the ones we have no evidence for and
+ *  renormalising what is left.
+ *
+ *  Price history starts when this project did, so for most games the two
+ *  history terms are null for a long time. Scoring them zero would punish a
+ *  game for our own missing data; dropping them says "no evidence" instead.
+ */
+export function dealScore(game: Game, weights: Weights): number {
+  const terms: [number, number | null | undefined][] = [
+    [weights.deal.discount_depth, game.discount_depth],
+    [weights.deal.price_anchor, game.price_anchor],
+    [weights.deal.vs_historical_min, game.vs_historical_min],
+    [weights.deal.vs_typical_sale, game.vs_typical_sale],
+  ];
+  const known = terms.filter(([, v]) => v !== null && v !== undefined);
+  const total = known.reduce((n, [w]) => n + w, 0);
+  if (!total) return 0;
+  return known.reduce((n, [w, v]) => n + w * (v as number), 0) / total;
+}
+
 export function finalScore(
   game: Game,
   weights: Weights,
   prefs: Prefs,
   currentYear: number,
 ): number {
-  const deal =
-    weights.deal.discount_depth * game.discount_depth +
-    weights.deal.price_anchor * game.price_anchor;
+  const deal = dealScore(game, weights);
 
   const base =
     weights.final.quality * game.quality +

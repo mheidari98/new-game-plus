@@ -25,9 +25,19 @@ stars = 0.40
 discount_exponent = 0.72
 # Absolute money saved, log-scaled against this reference saving.
 anchor_reference_saved = 55.0
+# Below this many recorded observations a product has no usable price history
+# and both history components are dropped, leaving the other two to
+# renormalise. Our history starts when the project did; a confident number
+# from three data points is worse than an honest gap.
+min_price_observations = 4
 
-discount_depth = 0.60
-price_anchor = 0.40
+discount_depth = 0.40
+price_anchor = 0.25
+# Null until the history is deep enough. With both absent, the two above
+# renormalise to 0.62/0.38 -- near the 0.60/0.40 they had before history
+# existed, so nothing about the ranking jumps on the day history arrives.
+vs_historical_min = 0.20
+vs_typical_sale = 0.15
 
 [final]
 quality = 0.45

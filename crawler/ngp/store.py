@@ -87,6 +87,18 @@ class GridPage:
             for p in (c.get("products") or [])
         }
 
+    def facet_values(self, name) -> list[tuple[str, int]]:
+        """`[(key, count)]` for one facet, empty if it was not requested.
+
+        Read rather than hardcoded: the store gained an 11th price bucket
+        between this project's design and its build.
+        """
+        for facet in self.facets:
+            if facet.get("name") == name:
+                return [(v["key"], v.get("count") or 0)
+                        for v in facet.get("values") or []]
+        return []
+
 
 class StoreClient:
     def __init__(self, http, locale="en-US"):
@@ -131,7 +143,7 @@ class StoreClient:
         )
 
     def grid_page(self, category_id, *, offset=0, size=MAX_PAGE_SIZE, sort_by=None,
-                  filter_by=(), baseline_total=None) -> GridPage:
+                  filter_by=(), facet_options=(), baseline_total=None) -> GridPage:
         if size > MAX_PAGE_SIZE:
             raise ValueError(f"page size {size} exceeds the server limit of {MAX_PAGE_SIZE}")
         if offset + size > MAX_WINDOW:
@@ -145,7 +157,8 @@ class StoreClient:
             "pageArgs": {"size": size, "offset": offset},
             "sortBy": sort_by,
             "filterBy": [_alias_filter(f) for f in filter_by],
-            "facetOptions": [],
+            # Facet counts are only returned for the facets you ask for.
+            "facetOptions": list(facet_options),
         })
         grid = data.get("categoryGridRetrieve")
         if grid is None:

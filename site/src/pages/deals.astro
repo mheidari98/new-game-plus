@@ -37,6 +37,7 @@ const base = import.meta.env.BASE_URL;
     .free { color: var(--free); font-weight: 600; }
     .tag { border: 1px solid var(--line); border-radius: 999px;
            padding: 0.05em 0.5em; font-size: 0.78rem; margin-left: 0.35rem; }
+    .tag.low { border-color: var(--free); color: var(--free); }
     s { opacity: 0.6; }
   </style>
 
@@ -124,7 +125,14 @@ const base = import.meta.env.BASE_URL;
         finalScore(b, live, { hasPlusExtra: state.hasPlus }, YEAR) -
         finalScore(a, live, { hasPlusExtra: state.hasPlus }, YEAR));
 
-      count.textContent = `${out.length.toLocaleString()} of ${rows.length.toLocaleString()} games`;
+      // Price history starts when this project did. Say so plainly rather
+      // than implying a floor we cannot support.
+      const tracked = out.filter((g) => g.vs_historical_min !== null).length;
+      count.textContent =
+        `${out.length.toLocaleString()} of ${rows.length.toLocaleString()} games · ` +
+        (tracked
+          ? `${tracked.toLocaleString()} with enough recorded prices to score against history`
+          : 'no usable price history yet, so those two ranking terms are dropped');
       results.innerHTML = out.slice(0, 200).map((g) => `
         <li>
           <a href="${storeUrl(g.id)}">${g.name}</a>
@@ -134,6 +142,7 @@ const base = import.meta.env.BASE_URL;
                   ? ` <s>${price(g.base_cents)}</s> −${g.discount_pct}%` : ''}`}
             ${g.quality > 0 ? ` · quality ${Math.round(g.quality)}` : ''}
             ${(g.local_players ?? 0) >= 2 ? `<span class="tag">${g.local_players}-player couch</span>` : ''}
+            ${g.vs_historical_min === 100 ? '<span class="tag low">lowest we have recorded</span>' : ''}
             ${g.plus_extra ? '<span class="tag">PS+ Extra</span>' : ''}
             ${g.psvr2 ? `<span class="tag">PS VR2 ${g.psvr2}</span>` : ''}
           </span>

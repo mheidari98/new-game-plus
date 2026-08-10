@@ -7,7 +7,7 @@ tests are deterministic and instant.
 
 import pytest
 
-from ngp.net import HttpClient, HttpError, Response
+from ngp.net import HttpClient, HttpError, Response, TransportFailure
 from ngp.ratelimit import AdaptiveLimiter, RateLimitExceeded
 
 
@@ -164,6 +164,46 @@ class TestErrors:
         with pytest.raises(HttpError):
             c.get("https://example.test/a")
         assert len(t.calls) == 3
+
+
+class TestTransportFailures:
+    """Five worker threads share one pooled HTTP/2 connection and the store
+    drops it occasionally: a live crawl logged 8 "Server disconnected" errors
+    in 1,600 requests. The host never answered, so this is a 502 in all but
+    name -- retry it, and do not read it as "we are going too fast".
+
+    `TransportFailure` is re-exported by net.py so this file does not have to
+    import an HTTP library, which the single-client invariant forbids.
+    """
+
+    def test_a_dropped_connection_is_retried(self):
+        t = FakeTransport(TransportFailure("Server disconnected"), ok(b'{"n":7}'))
+        c, _, _ = client(t)
+        assert c.get_json("https://example.test/a") == {"n": 7}
+        assert len(t.calls) == 2
+
+    def test_it_does_not_count_as_a_rate_refusal(self):
+        # Halving the crawl rate because a keep-alive expired would be a slow
+        # crawl for no reason.
+        c, limiter, _ = client(FakeTransport(
+            TransportFailure("Server disconnected"), ok()))
+        c.get("https://example.test/a")
+        assert limiter.refusals == 0
+
+    def test_it_gives_up_eventually_rather_than_hanging(self):
+        t = FakeTransport(*[TransportFailure("no route to host")] * 10)
+        c, _, _ = client(t, max_attempts=3)
+        with pytest.raises(HttpError):
+            c.get("https://example.test/a")
+        assert len(t.calls) == 3
+
+    def test_a_programming_error_is_not_retried(self):
+        # Only transport failures. A bug in our own code must surface at once.
+        t = FakeTransport(ValueError("bad payload"), ok())
+        c, _, _ = client(t)
+        with pytest.raises(ValueError):
+            c.get("https://example.test/a")
+        assert len(t.calls) == 1
 
 
 class TestProxy:

@@ -49,6 +49,8 @@ export function decode(payload: any): Index {
       dualsense: cols.dualsense[i],
       release_year: cols.release_year[i],
       critic_score: cols.critic_score?.[i] ?? null,
+      vs_historical_min: cols.vs_historical_min?.[i] ?? null,
+      vs_typical_sale: cols.vs_typical_sale?.[i] ?? null,
       quality: cols.quality[i],
       discount_depth: cols.discount_depth[i],
       price_anchor: cols.price_anchor[i],

@@ -97,6 +97,22 @@ def price_anchor(base_cents: int, price_cents: int, weights: Weights) -> float:
     return _clamp(100.0 * math.log1p(saved) / math.log1p(reference))
 
 
+def price_vs(price_cents, reference_cents) -> float | None:
+    """How today's price compares with a reference from our own history.
+
+    100 at or below the reference, halving each time the price doubles above
+    it. `None` means we have no reference -- and an absent component is
+    dropped so the rest renormalise, which is not the same as scoring zero.
+    Price history here starts when the project did, so most rows are `None`
+    for a long time and the site has to say so rather than imply a floor.
+    """
+    if not reference_cents or price_cents is None:
+        return None
+    if price_cents <= reference_cents:
+        return 100.0
+    return _clamp(100.0 * reference_cents / price_cents)
+
+
 def quality(critic_score, critic_count, star_average, star_count, weights: Weights) -> Quality:
     """Blend critic score and store stars, each shrunk toward its prior.
 

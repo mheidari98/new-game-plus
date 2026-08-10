@@ -19,8 +19,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ngp import history
 from ngp.cache import Cache
-from ngp.components import Weights, discount_depth, price_anchor, quality
+from ngp.components import Weights, discount_depth, price_anchor, price_vs, quality
 from ngp.features import decode_features
 from ngp.guard import PublishBlocked, check_publishable
 from ngp.net import HttpClient
@@ -28,7 +29,7 @@ from ngp.psplus import PlusIndex, fetch_all
 from ngp.publish import write_index
 from ngp.ratelimit import AdaptiveLimiter
 from ngp.ratings import Metacritic
-from ngp.store import StoreClient, money_to_cents
+from ngp.store import MAX_WINDOW, StoreClient, money_to_cents
 
 log = logging.getLogger("ngp")
 
@@ -37,6 +38,16 @@ REPO = HERE.parent          # so --out/--cache are the same wherever you run fro
 
 CATEGORIES = json.loads((HERE / "categories.json").read_text())
 GAME_CLASSES = ["FULL_GAME", "GAME_BUNDLE", "PREMIUM_EDITION"]
+
+# The grid's default order is best-selling, so enumeration order is popularity
+# order and the enrichment cursor gets its priority for free.
+SALES30 = {"name": "sales30", "isAscending": False}
+
+PRICE_FACET = "webBasePrice"
+
+# Catalogue-only concepts queue behind everything in the deals grid: the deals
+# set is what the site leads with, and it is at most ~4,500 rows.
+CATALOGUE_RANK_BASE = 100_000
 
 # Workers x latency must not exceed the limiter's ceiling or they just queue.
 # Measured latency ~0.8s, ceiling 6 req/s -> 5.
@@ -85,6 +96,12 @@ def crawl(args):
         concept_of = _concept_map(store)
 
         rows = _rank_and_seed(cache, products, concept_of)
+
+        if args.backfill:
+            added, unreleased = _extend_to_catalogue(store, cache, rows)
+            log.info("catalogue: +%d concepts beyond the deals set, %d unreleased "
+                     "concepts skipped (no product to price or enrich)", added, unreleased)
+
         todo = cache.due("product", ttl_days=args.ttl, limit=args.limit or args.cap)
         log.info("enriching %d of %d", len(todo), len(rows))
 
@@ -99,9 +116,19 @@ def crawl(args):
                         "quality scores will rest on store stars alone", attempted)
 
     games = _assemble(rows, cache, plus, weights, args.ttl, args.critic_ttl)
+
+    now = datetime.now(timezone.utc)
+    written, scored = _score_against_history(REPO / args.history, games, now.date(), weights)
+    log.info("price history: %d rows written, %d of %d games have enough to score",
+             written, scored, len(games))
+    # A real seasonal sale does move thousands of prices at once, so this is
+    # worth saying out loud but is not worth refusing to publish over.
+    if written > 10_000:
+        log.warning("%d price changes in one day; expected ~900. Real sales do this, "
+                    "but check the crawl did not re-key every product", written)
+
     out = REPO / args.out
-    stats = write_index(games, weights, out,
-                        generated_at=datetime.now(timezone.utc).isoformat())
+    stats = write_index(games, weights, out, generated_at=now.isoformat())
 
     check_publishable(
         game_count=len(games),
@@ -130,8 +157,7 @@ def _enumerate(store, category, baseline):
     out, offset = [], 0
     while offset < baseline:
         page = store.grid_page(
-            category, offset=offset, size=1000,
-            sort_by={"name": "sales30", "isAscending": False},
+            category, offset=offset, size=1000, sort_by=SALES30,
             filter_by=[f"storeDisplayClassification:{c}" for c in GAME_CLASSES],
             baseline_total=baseline if offset == 0 else None,
         )
@@ -144,29 +170,88 @@ def _enumerate(store, category, baseline):
     return out
 
 
-def _free_to_play(store):
-    """The curated F2P catalogue, flattened into product-shaped rows.
+def _rows_from_concepts(concepts):
+    """Flatten concept-grid rows into the product shape the rest of the crawl
+    speaks. Price and name sit on the concept; the product id has to be pulled
+    out of products[], and platforms are absent until the detail call.
 
-    It is a CONCEPT grid, so price and name sit on the concept and the
-    product id has to be pulled out of products[].
+    A concept with no products is unreleased: nothing to price, nothing to
+    enrich. Returns those separately rather than silently dropping them.
     """
-    page = store.grid_page(CATEGORIES["free_to_play"], size=1000,
-                           sort_by={"name": "sales30", "isAscending": False})
-    rows = []
-    for concept in page.concepts or []:
+    rows, unreleased = [], 0
+    for concept in concepts or []:
         products = concept.get("products") or []
         if not products:
-            continue                       # unreleased; nothing to price
+            unreleased += 1
+            continue
         rows.append({
             "id": products[0]["id"],
             "name": concept.get("name"),
-            "platforms": [],               # filled from the product detail
-            "price": concept.get("price") or {"basePrice": "Free",
-                                              "discountedPrice": "Free",
-                                              "isFree": True},
+            "platforms": [],
+            "price": concept.get("price") or {},
             "_concept_id": concept["id"],
         })
+    return rows, unreleased
+
+
+def _free_to_play(store):
+    """The curated F2P catalogue. One request for all of it."""
+    page = store.grid_page(CATEGORIES["free_to_play"], size=1000,
+                           sort_by=SALES30)
+    rows, _ = _rows_from_concepts(page.concepts)
+    for row in rows:
+        # Free by definition, so an absent price is a gap in the grid rather
+        # than an unknown.
+        row["price"] = row["price"] or {"basePrice": "Free",
+                                        "discountedPrice": "Free", "isFree": True}
     return rows
+
+
+def catalogue_concepts(store, category):
+    """Every concept in a category, escaping the 10,000-row pagination window.
+
+    `offset + size` is capped at 10,000, but a *filtered* grid paginates
+    within its own filtered total, so slicing by price bucket reaches the rest
+    of a ~12.8k catalogue. Three things this must not assume:
+
+    * **The bucket list is not a constant.** It is read from the facet
+      response; the store gained an 11th bucket after this was designed.
+    * **The buckets are not disjoint.** "Free" (`0-0`) is a subset of
+      "Under $1.99" (`0-199`), so concepts are deduped by id rather than
+      counted by summing.
+    * **Unpriced concepts are in no bucket at all** -- `price` is null on
+      unreleased titles -- so this enumeration is a lower bound, and the
+      shortfall is returned rather than glossed over.
+    """
+    head = store.grid_page(category, size=1, facet_options=[PRICE_FACET])
+    buckets = head.facet_values(PRICE_FACET)
+    if not buckets:
+        raise RuntimeError(f"category {category} exposes no {PRICE_FACET} facet to slice by")
+
+    rows, unreleased = {}, 0
+    for key, count in buckets:
+        if not count:
+            continue
+        if count > MAX_WINDOW:
+            raise RuntimeError(
+                f"price bucket {key} holds {count} concepts, past the {MAX_WINDOW} "
+                "window; it needs slicing by a second facet")
+        offset = 0
+        while offset < count:
+            page = store.grid_page(
+                category, offset=offset, size=1000, sort_by=SALES30,
+                filter_by=[f"{PRICE_FACET}:{key}"],
+                baseline_total=head.total if offset == 0 else None)
+            if not page.concepts:
+                break
+            found, skipped = _rows_from_concepts(page.concepts)
+            unreleased += skipped
+            for row in found:
+                rows.setdefault(row["_concept_id"], row)
+            offset += len(page.concepts)
+            if page.is_last:
+                break
+    return list(rows.values()), unreleased
 
 
 def _concept_map(store):
@@ -202,6 +287,29 @@ def _rank_and_seed(cache, products, concept_of):
     return rows
 
 
+def _extend_to_catalogue(store, cache, rows):
+    """Add every concept in the full catalogue that the deals set missed.
+
+    `rows` is mutated in place, so the publish step covers the catalogue too
+    and does not need a second code path. Concepts already seen keep their
+    deals rank -- they are the ones the site leads with.
+    """
+    found, unreleased = catalogue_concepts(store, CATEGORIES["all_games"])
+    added = []
+    for index, row in enumerate(found):
+        cid = row["_concept_id"]
+        if cid in rows:
+            continue
+        rows[cid] = {"concept_id": cid, "rank": CATALOGUE_RANK_BASE + index,
+                     "product": row}
+        added.append(rows[cid])
+    cache.upsert_concepts([
+        {"concept_id": r["concept_id"], "rank": r["rank"],
+         "product_id": r["product"]["id"]} for r in added
+    ])
+    return len(added), unreleased
+
+
 def _enrich(store, cache, todo, rows, ttl):
     """Per-concept detail. Threads share one limiter, so the aggregate rate
     is governed exactly as it would be single-threaded."""
@@ -218,6 +326,9 @@ def _enrich(store, cache, todo, rows, ttl):
             rating = stars.get("starRating") or {}
             cache.put("product", cid, {
                 "name": detail.get("name") or row["product"].get("name"),
+                # Concept grids do not carry platforms, so for anything found
+                # by the catalogue sweep this is the only source.
+                "platforms": detail.get("platforms") or [],
                 "genres": [g.get("value") for g in
                            (detail.get("combinedLocalizedGenres") or [])],
                 "esrb": (detail.get("contentRating") or {}).get("name"),
@@ -303,7 +414,9 @@ def _assemble(rows, cache, plus, weights, ttl, critic_ttl):
         games.append({
             "id": prod["id"],
             "name": detail.get("name") or prod.get("name") or "",
-            "platforms": sorted(prod.get("platforms") or []),
+            # Payload wins for display; the detail is the fallback for rows
+            # that came from a concept grid, which carries no platforms.
+            "platforms": sorted(prod.get("platforms") or detail.get("platforms") or []),
             "price_cents": price_cents,
             "base_cents": base_cents,
             "discount_pct": discount,
@@ -326,6 +439,30 @@ def _assemble(rows, cache, plus, weights, ttl, critic_ttl):
     return games
 
 
+def _score_against_history(root, games, today, weights):
+    """Record today's prices and score each game against everything recorded.
+
+    Both components stay None until a game has `min_price_observations`
+    behind it. Null is dropped by the browser and the remaining deal weights
+    renormalise -- a game is never marked down for history *we* do not have.
+    """
+    series, written = history.record(
+        root, [(g["id"], g["price_cents"], g["base_cents"]) for g in games], today)
+    floor = weights.deal["min_price_observations"]
+
+    scored = 0
+    for game in games:
+        summary = history.summarise(series.get(game["id"], []), floor)
+        if summary:
+            scored += 1
+        low = price_vs(game["price_cents"], summary.min_cents) if summary else None
+        typical = (price_vs(game["price_cents"], summary.typical_sale_cents)
+                   if summary else None)
+        game["vs_historical_min"] = None if low is None else round(low, 1)
+        game["vs_typical_sale"] = None if typical is None else round(typical, 1)
+    return written, scored
+
+
 def _read_previous_count(path):
     try:
         return json.loads(Path(path).read_text())["game_count"]
@@ -346,6 +483,8 @@ def main(argv=None):
     p.add_argument("--max-rate", type=float, default=6.0, help="ceiling req/s")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:2080")
     p.add_argument("--cache", default="data/cache/ngp.sqlite")
+    p.add_argument("--history", default="history",
+                   help="price-history checkout (the `data` branch in CI)")
     p.add_argument("--out", default="site/public/index.json")
     p.add_argument("-v", "--verbose", action="count", default=0)
     args = p.parse_args(argv)
