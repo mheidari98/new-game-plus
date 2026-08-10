@@ -70,18 +70,21 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
 
+      # Must precede the build: its outputs feed Astro's site/base, and a
+      # step cannot read outputs from one that runs after it.
+      - uses: actions/configure-pages@v5
+        id: pages
+
       - name: Build site
         working-directory: site
         env:
-          PAGES_URL: ${{ steps.pages.outputs.origin || 'https://mheidari98.github.io' }}
-          PAGES_BASE: /new-game-plus
+          PAGES_URL: ${{ steps.pages.outputs.origin }}
+          # Derived, not hardcoded, so a fork publishes under its own name.
+          PAGES_BASE: /${{ github.event.repository.name }}
         run: |
           npm ci
           npx vitest run
           npm run build
-
-      - uses: actions/configure-pages@v5
-        id: pages
 
       - uses: actions/upload-pages-artifact@v3
         with:
