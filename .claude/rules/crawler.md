@@ -18,10 +18,20 @@ but not transactions, so an unguarded write raises "cannot start a transaction w
 transaction" and silently loses rows. Take `self._lock` in any method that touches `self._db`.
 
 Enrichment is keyed per concept, not per product, and is resumable: a run that dies leaves rows
-unstamped and the next one continues. Do not add a separate cursor.
+unstamped and the next one continues. Do not add a separate cursor — a new source is a new
+`cache.due(<source>, ttl)` pass, not new bookkeeping.
+
+Cache a *miss* exactly like a hit. Otherwise every run re-asks Metacritic and HowLongToBeat
+about the same few hundred titles that will never have an entry.
+
+A transport failure is not a refusal. The host never answered, so it says nothing about our
+pace: `net.py` retries it like a 502 and leaves the limiter alone.
+
+HowLongToBeat gets its own `HttpClient` and its own much slower limiter, single-threaded. It is
+not sharing the store's 6 req/s.
 
 `metGetConceptById` is redundant — `metGetProductById` returns the same fields plus the concept
 id. Two operations per product, not three.
 
-Prefer `python crawler/main.py --once --limit 25 -v` while iterating. A full crawl is ~4,700
+Prefer `python crawler/main.py --once --limit 25 -v` while iterating. A full crawl is ~7,000
 requests against a live third-party API.

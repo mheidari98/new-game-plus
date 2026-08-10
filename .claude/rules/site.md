@@ -17,8 +17,19 @@ is 1.67 MB gzipped and blows the budget. `src/lib/index.ts` decodes it. Cover ar
 absent: it was 27% of the payload, and stripping the URL prefix saves only 0.3% because the asset
 hash is irreducible.
 
-One client island, on `/deals/`. Everything else is static. Adding a framework runtime would
-undo the reason the site loads instantly.
+Three plain `<script>` islands — `/deals/`, `/plus/` and `/game/` — and no framework runtime.
+Adding one would undo the reason the site loads instantly.
+
+`src/lib/detail.ts` returns a game page as an HTML *string* because that page is rendered twice:
+prerendered at build time for the first `PRERENDERED` rows, and in the browser for the tail. One
+implementation, so the two cannot drift. It escapes its inputs.
+
+Row order in `index.json` is popularity order (the store's default sort is `sales30`), and that
+order is what decides whether a game has a prerendered page. Capture the rank *before* sorting
+rows for display.
+
+A component that is `null` means "no evidence" and must be dropped, letting the remaining weights
+renormalise — see `dealScore`. Scoring it zero marks a game down for data we do not have.
 
 Astro's `base` has no trailing slash — `astro.config.mjs` normalises it. Verify any link change
 with `PAGES_BASE=/new-game-plus npm run build` and check the rendered `href`, because it works

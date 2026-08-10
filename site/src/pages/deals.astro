@@ -9,7 +9,7 @@ const base = import.meta.env.BASE_URL;
     here from published components — move the sliders and watch it change.
   </p>
 
-  <div id="app" data-src={`${base}index.json`}>
+  <div id="app" data-src={`${base}index.json`} data-base={base}>
     <p class="loading">Loading the catalogue…</p>
   </div>
 
@@ -42,16 +42,21 @@ const base = import.meta.env.BASE_URL;
   </style>
 
   <script>
-    import { decode, price, storeUrl } from '../lib/index';
+    import { decode, price } from '../lib/index';
+    import { gameUrl } from '../lib/detail';
     import { finalScore } from '../lib/score';
 
     const app = document.getElementById('app')!;
+    const BASE = app.dataset.base!;
     const YEAR = new Date().getFullYear();
 
+    // `w` is filled from the weights inside index.json below. It is never
+    // seeded with numbers here: a second copy of the weights is exactly how
+    // the site and the crawler come to disagree.
     const state = {
-      q: '', couch: false, hidePlus: false, hasPlus: false,
-      maxPrice: 0, platform: '', genre: '',
-      w: { quality: 0.45, deal: 0.30, value: 0.25 },
+      q: '', couch: false, splitscreen: false, hidePlus: false, hasPlus: false,
+      maxPrice: 0, platform: '', genre: '', maxHours: 0,
+      w: { quality: 0, deal: 0, value: 0 },
     };
 
     const res = await fetch(app.dataset.src!);
@@ -80,16 +85,26 @@ const base = import.meta.env.BASE_URL;
             <option value="2000">Under $20</option>
             <option value="4000">Under $40</option>
           </select>
+          <select id="maxHours" title="Main story length, where HowLongToBeat has it">
+            <option value="0">Any length</option>
+            <option value="5">Under 5 hours</option>
+            <option value="12">Under 12 hours</option>
+            <option value="30">Under 30 hours</option>
+          </select>
         </div>
         <div class="row">
           <label><input type="checkbox" id="couch" /> Couch co-op (2+ on one console)</label>
+          <label><input type="checkbox" id="splitscreen" /> Split screen</label>
           <label><input type="checkbox" id="hasPlus" /> I have PS+ Extra</label>
           <label><input type="checkbox" id="hidePlus" /> Hide catalogue games</label>
         </div>
         <div class="sliders">
-          <label>Game quality <input type="range" id="w-quality" min="0" max="100" value="45" /></label>
-          <label>Deal depth <input type="range" id="w-deal" min="0" max="100" value="30" /></label>
-          <label>Value per dollar <input type="range" id="w-value" min="0" max="100" value="25" /></label>
+          ${([['quality', 'Game quality'], ['deal', 'Deal depth'],
+              ['value', 'Value per dollar']] as const).map(([key, label]) => `
+            <label>${label}
+              <input type="range" id="w-${key}" min="0" max="100"
+                     value="${Math.round(state.w[key] * 100)}" />
+            </label>`).join('')}
         </div>
       </div>
       <p class="count" id="count"></p>
@@ -99,11 +114,18 @@ const base = import.meta.env.BASE_URL;
     const results = document.getElementById('results')!;
     const count = document.getElementById('count')!;
 
+    // Row order is popularity order and decides whether a game has a
+    // prerendered page, so the rank has to be captured before sorting.
+    const rankOf = new Map(rows.map((r, i) => [r.id, i]));
+
     function render() {
       const q = state.q.toLowerCase();
       let out = rows.filter((r) => {
         if (q && !r.name.toLowerCase().includes(q)) return false;
         if (state.couch && (r.local_players ?? 0) < 2) return false;
+        // Null means IGDB did not say, which is not the same as "no".
+        if (state.splitscreen && r.splitscreen !== true) return false;
+        if (state.maxHours && !(r.hours_main && r.hours_main <= state.maxHours)) return false;
         if (state.hidePlus && r.plus_extra) return false;
         if (state.platform && !r.platforms.includes(state.platform)) return false;
         if (state.genre && !r.genres.includes(state.genre)) return false;
@@ -135,13 +157,15 @@ const base = import.meta.env.BASE_URL;
           : 'no usable price history yet, so those two ranking terms are dropped');
       results.innerHTML = out.slice(0, 200).map((g) => `
         <li>
-          <a href="${storeUrl(g.id)}">${g.name}</a>
+          <a href="${gameUrl(BASE, g.id, rankOf.get(g.id)!)}">${g.name}</a>
           <span class="meta">
             ${g.price_cents === 0 ? '<span class="free">Free</span>'
               : `${price(g.price_cents)}${g.discount_pct > 0
                   ? ` <s>${price(g.base_cents)}</s> −${g.discount_pct}%` : ''}`}
             ${g.quality > 0 ? ` · quality ${Math.round(g.quality)}` : ''}
+            ${g.hours_main ? ` · ${g.hours_main}h` : ''}
             ${(g.local_players ?? 0) >= 2 ? `<span class="tag">${g.local_players}-player couch</span>` : ''}
+            ${g.splitscreen ? '<span class="tag">split screen</span>' : ''}
             ${g.vs_historical_min === 100 ? '<span class="tag low">lowest we have recorded</span>' : ''}
             ${g.plus_extra ? '<span class="tag">PS+ Extra</span>' : ''}
             ${g.psvr2 ? `<span class="tag">PS VR2 ${g.psvr2}</span>` : ''}
@@ -155,10 +179,12 @@ const base = import.meta.env.BASE_URL;
         (state as any)[key] = (e.target as HTMLSelectElement).value; render();
       });
     }
-    document.getElementById('maxPrice')!.addEventListener('change', (e) => {
-      state.maxPrice = Number((e.target as HTMLSelectElement).value); render();
-    });
-    for (const key of ['couch', 'hasPlus', 'hidePlus'] as const) {
+    for (const id of ['maxPrice', 'maxHours'] as const) {
+      document.getElementById(id)!.addEventListener('change', (e) => {
+        (state as any)[id] = Number((e.target as HTMLSelectElement).value); render();
+      });
+    }
+    for (const key of ['couch', 'splitscreen', 'hasPlus', 'hidePlus'] as const) {
       $(key).addEventListener('change', (e) => {
         (state as any)[key] = (e.target as HTMLInputElement).checked; render();
       });

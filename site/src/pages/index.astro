@@ -1,10 +1,12 @@
 ---
 import Base from '../layouts/Base.astro';
-import { decode, price, storeUrl } from '../lib/index';
+import { decode, price } from '../lib/index';
+import { gameUrl } from '../lib/detail';
 import raw from '../../public/index.json';
 
 const { meta, rows } = decode(raw);
 const base = import.meta.env.BASE_URL;
+const rankOf = new Map(rows.map((r, i) => [r.id, i]));
 
 const free = rows.filter((r) => r.is_free || r.price_cents === 0)
   .sort((a, b) => b.quality - a.quality).slice(0, 12);
@@ -32,7 +34,7 @@ const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
     <ul class="grid">
       {free.map((g) => (
         <li class="card">
-          <a href={storeUrl(g.id)}>{g.name}</a>
+          <a href={gameUrl(base, g.id, rankOf.get(g.id)!)}>{g.name}</a>
           <span class="meta">
             <span class="free">Free</span>
             {g.genres[0] && <> · {g.genres[0]}</>}
@@ -64,7 +66,7 @@ const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
     <ol class="rows">
       {deals.map((g) => (
         <li>
-          <a href={storeUrl(g.id)}>{g.name}</a>
+          <a href={gameUrl(base, g.id, rankOf.get(g.id)!)}>{g.name}</a>
           <span class="meta">
             {price(g.price_cents)} <s>{price(g.base_cents)}</s> · −{g.discount_pct}%
             {g.quality > 0 && <> · quality {Math.round(g.quality)}</>}

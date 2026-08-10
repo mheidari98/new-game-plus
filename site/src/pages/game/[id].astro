@@ -1,0 +1,24 @@
+---
+import Base from '../../layouts/Base.astro';
+import { decode } from '../../lib/index';
+import { detailHtml, PRERENDERED } from '../../lib/detail';
+import raw from '../../../public/index.json';
+
+// The most popular games get a real page; the tail is rendered by
+// game/index.astro from the index the browser already has. Index order is
+// popularity order, because the store's default sort is sales30.
+export function getStaticPaths() {
+  const { rows } = decode(raw);
+  return rows.slice(0, PRERENDERED).map((game) => ({
+    params: { id: game.id },
+    props: { game },
+  }));
+}
+
+const { game } = Astro.props;
+const body = detailHtml(game, new Date().getFullYear());
+---
+<Base title={`${game.name} — new-game-plus`}
+      tagline={`Price, PS+ status and ranking components for ${game.name}.`}>
+  <article class="gamepage" set:html={body} />
+</Base>

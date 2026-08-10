@@ -24,12 +24,10 @@ else; `net.HttpClient` sends a real one, so there is nothing to do here.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from urllib.parse import quote
 
-from .titles import normalize_title, numbers_compatible
+from .titles import normalize_title, numbers_compatible, similarity, split_year
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +40,6 @@ GAME_TYPE = 13
 # predecessor project, where it was tuned against real store names.
 MIN_CONFIDENCE = 0.72
 
-_YEAR_SUFFIX = re.compile(r"\s*\((\d{4})\)\s*$")
 _PS_CURRENT = ("playstation 5", "playstation 4")
 
 
@@ -53,26 +50,6 @@ class Critic:
     year: int | None
     confidence: float
     url: str
-
-
-def _split_year(title: str) -> tuple[str, int | None]:
-    """`"Silent Hill 2 (2001)"` -> `("Silent Hill 2", 2001)`."""
-    match = _YEAR_SUFFIX.search(title or "")
-    if not match:
-        return title or "", None
-    return title[: match.start()], int(match.group(1))
-
-
-def _similarity(a: str, b: str) -> float:
-    """Character *and* token agreement, whichever is worse.
-
-    Characters alone score "Bean Beasts" 0.82 against "Gang Beasts" -- and
-    Bean Beasts is a real game that really does come back in that search.
-    Comparing whole words instead sees a different first word and says 0.5.
-    """
-    x, y = normalize_title(a), normalize_title(b)
-    return min(SequenceMatcher(None, x, y).ratio(),
-               SequenceMatcher(None, x.split(), y.split()).ratio())
 
 
 class Metacritic:
@@ -104,13 +81,13 @@ class Metacritic:
 
         scored = []
         for item in candidates:
-            title, suffix_year = _split_year(item.get("title") or "")
+            title, suffix_year = split_year(item.get("title") or "")
             if not numbers_compatible(query, title):
                 continue
             score = (item.get("criticScoreSummary") or {}).get("score")
             if not score:             # None = unreleased, 0 = no reviews at all
                 continue
-            confidence = _similarity(query, title)
+            confidence = similarity(query, title)
             if confidence < MIN_CONFIDENCE:
                 continue
             year = item.get("premiereYear") or suffix_year

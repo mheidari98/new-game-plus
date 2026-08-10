@@ -1,0 +1,98 @@
+/**
+ * One game's page body, as a string of HTML.
+ *
+ * A string rather than an Astro component because it is rendered twice: the
+ * popular games are prerendered at build time, and the long tail is rendered
+ * in the browser from the index already in memory. Two implementations of the
+ * same page would drift, so there is one.
+ *
+ * Pure: no fetch, no DOM, no Date.now(). The current year is a parameter.
+ */
+import type { Row } from './index';
+import { price, storeUrl } from './index';
+
+/** How many games get a prerendered page.
+ *
+ *  Sized to cover the whole deals-plus-free-to-play set, which is ~2,993 rows
+ *  and is everything the site links to directly. The backfilled long tail
+ *  starts well past this and renders in the browser instead; it needs no data
+ *  the page has not already loaded.
+ *
+ *  Build time is not the constraint -- 2,005 pages took 1.4 s locally -- the
+ *  10-minute Pages *deployment* timeout is, and 3,000 files is far inside it.
+ *  A 12,000-page deploy is still unmeasured, which is why this is not simply
+ *  "all of them".
+ */
+export const PRERENDERED = 3000;
+
+/** Index order is popularity order -- the store's default sort is sales30 --
+ *  so a row's position decides whether it has a prerendered page. */
+export const gameUrl = (base: string, id: string, rank: number) =>
+  rank < PRERENDERED ? `${base}game/${id}/` : `${base}game/?id=${encodeURIComponent(id)}`;
+
+const esc = (s: unknown) =>
+  String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+
+const row = (label: string, value: string | null) =>
+  value ? `<div class="fact"><dt>${esc(label)}</dt><dd>${value}</dd></div>` : '';
+
+const EVIDENCE: Record<string, string> = {
+  high: 'a critic score and a lot of player ratings',
+  medium: 'one source, or player ratings alone',
+  low: 'thin - few ratings and no critic score',
+  none: 'nothing at all, so the score is not meaningful',
+};
+
+export function detailHtml(game: Row, currentYear: number): string {
+  const off = game.discount_pct > 0;
+  const players = game.local_players;
+
+  return `
+    <h1>${esc(game.name)}</h1>
+    <p class="price">
+      ${game.price_cents === 0
+        ? '<span class="free">Free</span>'
+        : `<strong>${price(game.price_cents)}</strong>` +
+          (off ? ` <s>${price(game.base_cents)}</s> <span class="off">−${game.discount_pct}%</span>` : '')}
+      ${game.plus_extra ? '<span class="tag in">included with PS+ Extra</span>' : ''}
+      ${game.plus_classics ? '<span class="tag in">included with PS+ Premium Classics</span>' : ''}
+    </p>
+
+    <dl class="facts">
+      ${row('Platforms', game.platforms.length ? esc(game.platforms.join(', ')) : null)}
+      ${row('Released', game.release_year ? String(game.release_year) : null)}
+      ${row('Genres', game.genres.length ? esc(game.genres.join(', ')) : null)}
+      ${row('Rated', game.esrb ? esc(game.esrb) : null)}
+      ${row('Players on one console', players ? `${players}${players >= 2 ? ' — couch co-op' : ''}` : null)}
+      ${row('Split screen', game.splitscreen === null ? null : game.splitscreen ? 'yes' : 'no')}
+      ${row('Perspective', game.perspective ? esc(game.perspective) : null)}
+      ${row('Main story', game.hours_main ? `about ${game.hours_main} hours` : null)}
+      ${row('Cost per hour', game.hours_main && game.price_cents
+        ? price(Math.round(game.price_cents / game.hours_main)) : null)}
+      ${row('DualSense haptics', game.dualsense ? 'yes' : null)}
+      ${row('PS VR2', game.psvr2 ? esc(game.psvr2) : null)}
+    </dl>
+
+    <h2>Why it ranks where it does</h2>
+    <dl class="facts">
+      ${row('Quality', `${Math.round(game.quality)} / 100`)}
+      ${row('Metacritic', game.critic_score ? String(game.critic_score) : null)}
+      ${row('Evidence behind that', esc(EVIDENCE[game.evidence] ?? game.evidence))}
+      ${row('Discount depth', `${Math.round(game.discount_depth)} / 100`)}
+      ${row('Money saved', `${Math.round(game.price_anchor)} / 100`)}
+      ${row('Against its lowest recorded price', game.vs_historical_min === null
+        ? 'no usable price history yet' : `${Math.round(game.vs_historical_min!)} / 100`)}
+      ${row('Against its typical sale price', game.vs_typical_sale === null
+        ? 'no usable price history yet' : `${Math.round(game.vs_typical_sale!)} / 100`)}
+    </dl>
+    <p class="note">
+      These are the published components. The final ranking is computed in your
+      browser from them and the weights in the same file, so you can check it.
+      ${game.release_year && currentYear - game.release_year > 3
+        ? `A discount on a ${currentYear - game.release_year}-year-old game counts for a little less.`
+        : ''}
+    </p>
+
+    <p><a class="buy" href="${storeUrl(game.id)}">View on the PlayStation Store →</a></p>`;
+}

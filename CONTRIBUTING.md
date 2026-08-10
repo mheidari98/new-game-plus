@@ -8,6 +8,9 @@ make test     # pytest + vitest + invariant checks, no network
 Nothing needs a secret. IGDB is the only key the project will ever take, and its absence must
 produce null columns rather than a failure.
 
+Behind a restrictive network, pass `--proxy http://127.0.0.1:2080`. PlayStation and Metacritic
+answer directly; HowLongToBeat and IGDB do not.
+
 ## Before you change anything
 
 Read [AGENTS.md](AGENTS.md). It carries the pitfalls and the enforced invariants, and it is the

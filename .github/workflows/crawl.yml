@@ -14,6 +14,11 @@ on:
         description: "Max enrichments this run"
         required: false
         default: "5000"
+      backfill:
+        description: "Extend past the deals set to the full ~12.8k catalogue"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   # write, because the price history is committed to the `data` branch. It is
@@ -68,9 +73,13 @@ jobs:
             git -C history remote add origin "$REMOTE"
           }
 
+      # --backfill adds the price-bucket sweep over the whole catalogue. The
+      # cap bounds each run, and the TTL cursor carries the rest forward, so
+      # this warms over several days rather than in one long job.
       - name: Crawl
         run: |
           python crawler/main.py --once \
+            ${{ github.event.inputs.backfill == 'false' && ' ' || '--backfill' }} \
             --cap '${{ github.event.inputs.cap || 5000 }}' -v
 
       # Before the site build: if the crawl produced nothing publishable the
@@ -125,8 +134,17 @@ jobs:
       - name: Report
         run: |
           gz=$(stat -c%s site/public/index.json.gz)
-          echo "### Published" >> $GITHUB_STEP_SUMMARY
-          echo "index.json.gz: $gz bytes ($((gz * 100 / 819200))% of budget)" >> $GITHUB_STEP_SUMMARY
+          pages=$(find site/dist -name '*.html' | wc -l)
+          {
+            echo "### Published"
+            echo "- index.json.gz: $gz bytes ($((gz * 100 / 819200))% of the 800 KiB budget)"
+            echo "- $pages prerendered pages"
+            echo ""
+            echo '### Price history'
+            echo '```'
+            python crawler/ngp/history.py --report --root history
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
 
   deploy:
     needs: crawl

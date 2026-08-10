@@ -36,6 +36,29 @@ const base = import.meta.env.BASE_URL;
     footer { border-top: 1px solid var(--line); margin-top: 4rem; padding: 2rem 0; color: var(--muted); font-size: 0.9rem; }
     footer a { color: var(--accent); }
     code { background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0.1em 0.35em; font-size: 0.9em; }
+
+    /* One game's page. Shared here rather than in either page, because the
+       markup is rendered twice: prerendered for the popular games, in the
+       browser for the tail. */
+    .gamepage h2 { font-size: 1.15rem; letter-spacing: -0.02em; margin: 2rem 0 0.5rem; }
+    .gamepage .price { font-size: 1.2rem; margin: 0.5rem 0 1.5rem; }
+    .gamepage .price s { opacity: 0.6; font-size: 0.9rem; }
+    .gamepage .off { color: var(--free); font-weight: 600; font-size: 0.9rem; }
+    .gamepage .free { color: var(--free); font-weight: 700; }
+    .gamepage .tag { border: 1px solid var(--line); border-radius: 999px;
+                     padding: 0.1em 0.6em; font-size: 0.8rem; margin-left: 0.4rem;
+                     white-space: nowrap; }
+    .gamepage .tag.in { border-color: var(--free); color: var(--free); }
+    .gamepage .facts { display: grid; gap: 0; margin: 0; }
+    .gamepage .fact { display: grid; grid-template-columns: minmax(9rem, 16rem) 1fr;
+                      gap: 1rem; padding: 0.45rem 0; border-top: 1px solid var(--line); }
+    .gamepage dt { color: var(--muted); font-size: 0.9rem; }
+    .gamepage dd { margin: 0; }
+    .gamepage .note { color: var(--muted); font-size: 0.95rem; margin-top: 1rem; }
+    .gamepage .buy { color: var(--accent); font-weight: 600; }
+    @media (max-width: 34rem) {
+      .gamepage .fact { grid-template-columns: 1fr; gap: 0; }
+    }
   </style>
 </head>
 <body>

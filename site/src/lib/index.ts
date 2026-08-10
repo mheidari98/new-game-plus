@@ -21,6 +21,11 @@ export interface Row extends Game {
   /** Metascore, or null when nothing matched. Published so the quality
    *  component can be checked against its source by hand. */
   critic_score: number | null;
+  /** Best-effort and usually null: HowLongToBeat main-story hours, and
+   *  IGDB's split-screen flag and player perspective. */
+  hours_main: number | null;
+  splitscreen: boolean | null;
+  perspective: string | null;
 }
 
 export interface Index {
@@ -51,6 +56,9 @@ export function decode(payload: any): Index {
       critic_score: cols.critic_score?.[i] ?? null,
       vs_historical_min: cols.vs_historical_min?.[i] ?? null,
       vs_typical_sale: cols.vs_typical_sale?.[i] ?? null,
+      hours_main: cols.hours_main?.[i] ?? null,
+      splitscreen: cols.splitscreen?.[i] ?? null,
+      perspective: lookup('perspective', cols.perspective?.[i] ?? null),
       quality: cols.quality[i],
       discount_depth: cols.discount_depth[i],
       price_anchor: cols.price_anchor[i],

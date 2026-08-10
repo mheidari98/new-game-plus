@@ -36,8 +36,10 @@ _SCALARS = [
     # browser drops a null term and renormalises the rest, so a game is never
     # marked down for history we do not have.
     "vs_historical_min", "vs_typical_sale",
+    # Best-effort third-party columns. Null is the normal state for both.
+    "hours_main", "splitscreen",
 ]
-_DICTED = ["genres", "esrb", "platforms", "tier", "psvr2", "evidence"]
+_DICTED = ["genres", "esrb", "platforms", "tier", "psvr2", "evidence", "perspective"]
 _MULTI = {"genres", "platforms"}      # lists per row; the rest are single values
 
 
@@ -79,17 +81,31 @@ def build_index(games, weights, generated_at=None) -> dict:
     }
 
 
-def write_index(games, weights, path, generated_at=None) -> dict:
-    """Write index.json plus a precompressed .gz sidecar. Returns sizes."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+def render(games, weights, generated_at=None) -> tuple[bytes, bytes, dict]:
+    """Serialise the index without writing it anywhere.
 
+    Separate from saving so the failure policy can run on the real sizes and
+    refuse *before* anything lands on disk. A stale-but-correct site beats a
+    fresh-but-wrong one.
+    """
     body = json.dumps(build_index(games, weights, generated_at),
                       separators=(",", ":")).encode()
-    path.write_bytes(body)
-
     packed = gzip.compress(body, 9)
+    return body, packed, {
+        "raw_bytes": len(body), "gzip_bytes": len(packed), "count": len(games),
+        "over_budget": len(packed) > GZIP_BUDGET_BYTES}
+
+
+def save(path, body: bytes, packed: bytes) -> None:
+    """index.json plus a precompressed .gz sidecar."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
     path.with_suffix(".json.gz").write_bytes(packed)
 
-    return {"raw_bytes": len(body), "gzip_bytes": len(packed),
-            "count": len(games), "over_budget": len(packed) > GZIP_BUDGET_BYTES}
+
+def write_index(games, weights, path, generated_at=None) -> dict:
+    """Render and save in one step, for callers with nothing to check."""
+    body, packed, stats = render(games, weights, generated_at)
+    save(path, body, packed)
+    return stats

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 # Edition and platform noise. Removed before comparison so that an edition
 # suffix cannot decide a match.
@@ -94,3 +95,36 @@ def numbers_compatible(a: str, b: str) -> bool:
     return sorted(_NUMBER_RE.findall(normalize_title(a))) == sorted(
         _NUMBER_RE.findall(normalize_title(b))
     )
+
+
+def similarity(a: str, b: str) -> float:
+    """Character *and* whole-word agreement, whichever is worse.
+
+    Characters alone score "Bean Beasts" 0.82 against "Gang Beasts" -- and
+    Bean Beasts is a real game that really does come back in that search.
+    Comparing whole words instead sees a different first word and says 0.5.
+
+    Never a match on its own: every caller must also pass
+    :func:`numbers_compatible`, which no similarity measure can substitute for.
+    """
+    x, y = normalize_title(a), normalize_title(b)
+    if not x or not y:
+        return 0.0
+    return min(SequenceMatcher(None, x, y).ratio(),
+               SequenceMatcher(None, x.split(), y.split()).ratio())
+
+
+_YEAR_SUFFIX = re.compile(r"\s*\((\d{4})\)\s*$")
+
+
+def split_year(title: str) -> tuple[str, int | None]:
+    """`"Silent Hill 2 (2001)"` -> `("Silent Hill 2", 2001)`.
+
+    Third-party catalogues disambiguate remakes with a year suffix. Left in
+    the title, that 2001 reads as a version number and the numeric guard
+    throws away the remake *and* the original.
+    """
+    match = _YEAR_SUFFIX.search(title or "")
+    if not match:
+        return title or "", None
+    return title[: match.start()], int(match.group(1))

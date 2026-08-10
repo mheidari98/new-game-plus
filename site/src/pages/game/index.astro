@@ -1,0 +1,36 @@
+---
+import Base from '../../layouts/Base.astro';
+const base = import.meta.env.BASE_URL;
+---
+<Base title="Game — new-game-plus"
+      tagline="Price, PS+ status and ranking components for one game.">
+  <article class="gamepage" id="app" data-src={`${base}index.json`}>
+    <p class="note">Loading…</p>
+  </article>
+
+  <script>
+    import { decode } from '../../lib/index';
+    import { detailHtml } from '../../lib/detail';
+
+    // The long tail: everything past the prerendered pages renders here from
+    // the same index the explorer loads, so there is no extra payload and no
+    // second copy of the page markup.
+    const app = document.getElementById('app')!;
+    const id = new URLSearchParams(location.search).get('id');
+
+    if (!id) {
+      app.innerHTML = '<p class="note">No game selected.</p>';
+    } else {
+      const { rows } = decode(await (await fetch(app.dataset.src!)).json());
+      const game = rows.find((r) => r.id === id);
+      if (!game) {
+        app.innerHTML =
+          '<p class="note">That game is not in the current index. It may have left the ' +
+          'store, or the crawl has not reached it yet.</p>';
+      } else {
+        app.innerHTML = detailHtml(game, new Date().getFullYear());
+        document.title = `${game.name} — new-game-plus`;
+      }
+    }
+  </script>
+</Base>

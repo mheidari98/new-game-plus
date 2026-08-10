@@ -82,10 +82,15 @@ def check_scoring_is_pure():
 # weights.toml is copied into index.json and the browser reads it from there.
 # A second hardcoded copy is how the site and crawler silently disagree.
 def check_weights_single_source():
-    code = strip_ts_comments((REPO / "site/src/lib/score.ts").read_text())
-    for match in re.finditer(r"(quality|deal|value|psplus_extra)\s*:\s*([0-9]*\.[0-9]+)", code):
-        fail("score.ts must read weights from index.json, not hardcode them",
-             f"found {match.group(1)}: {match.group(2)}")
+    # The islands count too: the deals page once seeded its sliders from a
+    # literal copy of weights.toml, which is the same drift by another route.
+    sources = [REPO / "site/src/lib/score.ts", *sorted((REPO / "site/src/pages").rglob("*.astro"))]
+    for path in sources:
+        code = strip_ts_comments(path.read_text())
+        for match in re.finditer(
+                r"(quality|deal|value|psplus_extra)\s*:\s*([0-9]*\.[0-9]+)", code):
+            fail(f"{path.name} must read weights from index.json, not hardcode them",
+                 f"found {match.group(1)}: {match.group(2)}")
 
 
 # --- 4. every fuzzy match is guarded ---------------------------------------
@@ -97,7 +102,7 @@ def check_fuzzy_matching_is_guarded():
         text = path.read_text()
         fuzzy = re.search(
             r"\b(SequenceMatcher|rapidfuzz|difflib|token_sort_ratio|partial_ratio"
-            r"|token_set_ratio|fuzz\.)", text)
+            r"|token_set_ratio|fuzz\.|similarity)", text)
         if fuzzy and "numbers_compatible" not in text:
             fail("fuzzy matching must be gated by titles.numbers_compatible()",
                  f"{path.relative_to(REPO)} uses {fuzzy.group(1)} without the guard")

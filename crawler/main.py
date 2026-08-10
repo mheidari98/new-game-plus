@@ -24,9 +24,11 @@ from ngp.cache import Cache
 from ngp.components import Weights, discount_depth, price_anchor, price_vs, quality
 from ngp.features import decode_features
 from ngp.guard import PublishBlocked, check_publishable
+from ngp.hltb import HowLongToBeat
+from ngp.igdb import Igdb
 from ngp.net import HttpClient
 from ngp.psplus import PlusIndex, fetch_all
-from ngp.publish import write_index
+from ngp.publish import render, save
 from ngp.ratelimit import AdaptiveLimiter
 from ngp.ratings import Metacritic
 from ngp.store import MAX_WINDOW, StoreClient, money_to_cents
@@ -115,7 +117,12 @@ def crawl(args):
             log.warning("metacritic matched nothing in %d lookups; "
                         "quality scores will rest on store stars alone", attempted)
 
-    games = _assemble(rows, cache, plus, weights, args.ttl, args.critic_ttl)
+        _enrich_editorial(Igdb(http), cache, rows, args)
+
+    if args.playtime:
+        _enrich_playtime(cache, rows, args)
+
+    games = _assemble(rows, cache, plus, weights, args)
 
     now = datetime.now(timezone.utc)
     written, scored = _score_against_history(REPO / args.history, games, now.date(), weights)
@@ -127,9 +134,8 @@ def crawl(args):
         log.warning("%d price changes in one day; expected ~900. Real sales do this, "
                     "but check the crawl did not re-key every product", written)
 
-    out = REPO / args.out
-    stats = write_index(games, weights, out, generated_at=now.isoformat())
-
+    # Render, then check, then write. Nothing degraded reaches the disk.
+    body, packed, stats = render(games, weights, generated_at=now.isoformat())
     check_publishable(
         game_count=len(games),
         previous_game_count=previous,
@@ -141,6 +147,7 @@ def crawl(args):
         filtered_counts={"game_classes": len(products)},
         baseline_count=baseline,
     )
+    save(REPO / args.out, body, packed)
     (state_dir / "last_good.json").write_text(json.dumps({"game_count": len(games)}))
 
     log.info("published %d games: %d B raw, %d B gzipped (%.0f%% of budget)",
@@ -386,13 +393,100 @@ def _enrich_critics(metacritic, cache, rows, ttl, critic_ttl, limit):
     return matched, len(todo)
 
 
+def _enrich_playtime(cache, rows, args):
+    """HowLongToBeat, on its own client and its own much slower limiter.
+
+    Deliberately not sharing the store's 6 req/s: this is a source whose terms
+    we are already stretching, and playtime does not change, so a 180-day TTL
+    plus a per-run cap means the catalogue warms over weeks and then costs
+    almost nothing. Single-threaded for the same reason.
+    """
+    todo = cache.due("playtime", ttl_days=args.playtime_ttl, limit=args.playtime_cap)
+    if not todo:
+        return 0
+
+    with HttpClient(limiter=AdaptiveLimiter(start=0.5, ceiling=1.0),
+                    proxy=args.proxy) as http:
+        hltb = HowLongToBeat(http)
+        if not hltb.available:
+            # The endpoint moves every two or three months. That is the normal
+            # state, not an incident: playtime stays null and the run goes on.
+            log.warning("hltb unavailable this run; playtime stays null")
+            return 0
+
+        found = 0
+        for cid in todo:
+            row = rows.get(cid)
+            detail = cache.get("product", cid, ttl_days=args.ttl) or {}
+            name = detail.get("name") or (row and row["product"].get("name"))
+            if not name:
+                continue
+            play = hltb.lookup(name, _release_year(detail.get("release")))
+            cache.put("playtime", cid,
+                      {"hours_main": play.main_hours, "title": play.title,
+                       "hltb_id": play.hltb_id} if play else {})
+            cache.mark("playtime", cid)
+            found += bool(play)
+
+    log.info("playtime: %d of %d looked up matched", found, len(todo))
+    return found
+
+
+def _enrich_editorial(igdb, cache, rows, args):
+    """IGDB split-screen and perspective. ~26 requests for the whole
+    catalogue, or nothing at all without a key."""
+    if not igdb.configured:
+        log.info("igdb: no credentials, split-screen and perspective stay null")
+        return 0
+    todo = cache.due("igdb", ttl_days=args.igdb_ttl)
+    if not todo:
+        return 0
+
+    source = igdb.source_id()
+    index, shape = igdb.psn_index(source) if source else ({}, None)
+    if shape is None:
+        # The uid is not any identifier we hold. Name matching is the
+        # documented fallback, and it is a different enough problem that
+        # guessing here would be worse than shipping nulls.
+        log.warning("igdb: uid shape unrecognised, so there is no exact join; "
+                    "split-screen and perspective stay null")
+        return 0
+
+    keys = {cid: _igdb_key(shape, cid, rows.get(cid)) for cid in todo}
+    matched = {cid: index[key] for cid, key in keys.items() if key in index}
+    editorial = igdb.editorial(matched.values())
+
+    for cid in todo:
+        found = editorial.get(matched.get(cid))
+        cache.put("igdb", cid, {
+            "splitscreen": found.splitscreen, "perspective": found.perspective,
+            "hours_main": round(found.time_to_beat_seconds / 3600.0, 1)
+            if found.time_to_beat_seconds else None,
+        } if found else {})
+        cache.mark("igdb", cid)
+    log.info("igdb: %d of %d concepts joined on %s", len(matched), len(todo), shape)
+    return len(matched)
+
+
+def _igdb_key(shape, concept_id, row):
+    """Our side of the join, in whatever identifier IGDB turned out to store."""
+    product_id = row["product"]["id"] if row else ""
+    if shape == "concept_id":
+        return str(concept_id)
+    if shape == "product_id":
+        return product_id
+    parts = product_id.split("-")            # UP9000-PPSA26344_00-GHOST2SHIP000000
+    return parts[1] if len(parts) > 1 else ""
+
+
 def _release_year(value):
     year = (value or "")[:4]
     return int(year) if year.isdigit() else None
 
 
-def _assemble(rows, cache, plus, weights, ttl, critic_ttl):
+def _assemble(rows, cache, plus, weights, args):
     """Join crawl output into publishable rows. No I/O beyond the cache."""
+    ttl, critic_ttl = args.ttl, args.critic_ttl
     games = []
     for cid, row in rows.items():
         prod = row["product"]
@@ -404,6 +498,8 @@ def _assemble(rows, cache, plus, weights, ttl, critic_ttl):
 
         detail = cache.get("product", cid, ttl_days=ttl) or {}
         critic = cache.get("critic", cid, ttl_days=critic_ttl) or {}
+        play = cache.get("playtime", cid, ttl_days=args.playtime_ttl) or {}
+        editorial = cache.get("igdb", cid, ttl_days=args.igdb_ttl) or {}
         member = plus.lookup(concept_id=cid, product_id=prod["id"])
         # None, not 0: the search response carries the metascore but not the
         # review count, and quality() shrinks an unknown depth conservatively.
@@ -431,6 +527,11 @@ def _assemble(rows, cache, plus, weights, ttl, critic_ttl):
             "release_year": _release_year(detail.get("release")),
             "tier": tier_of(base_cents),
             "critic_score": critic.get("score"),
+            # HowLongToBeat first, IGDB's time-to-beat as the substitute. Both
+            # are best-effort and either may be absent.
+            "hours_main": play.get("hours_main") or editorial.get("hours_main"),
+            "splitscreen": editorial.get("splitscreen"),
+            "perspective": editorial.get("perspective"),
             "quality": round(q.score, 1),
             "discount_depth": round(discount_depth(discount, weights), 1),
             "price_anchor": round(price_anchor(base_cents, price_cents, weights), 1),
@@ -479,6 +580,14 @@ def main(argv=None):
     p.add_argument("--ttl", type=float, default=30, help="detail cache TTL, days")
     p.add_argument("--critic-ttl", type=float, default=14,
                    help="Metacritic cache TTL, days")
+    p.add_argument("--no-playtime", dest="playtime", action="store_false",
+                   help="skip HowLongToBeat entirely")
+    p.add_argument("--playtime-cap", type=int, default=400,
+                   help="max HowLongToBeat lookups per run")
+    p.add_argument("--playtime-ttl", type=float, default=180,
+                   help="playtime cache TTL, days -- it does not change")
+    p.add_argument("--igdb-ttl", type=float, default=90,
+                   help="IGDB cache TTL, days")
     p.add_argument("--rate", type=float, default=1.0, help="starting req/s")
     p.add_argument("--max-rate", type=float, default=6.0, help="ceiling req/s")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:2080")

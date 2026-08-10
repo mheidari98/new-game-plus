@@ -1,2 +1,5 @@
-httpx[http2]>=0.25
+# >=0.26 for the `proxy=` keyword. 0.25 only had `proxies=`, so the documented
+# local-dev proxy flow raised TypeError on it -- and CI never saw it, because
+# a fresh install always resolved to something newer.
+httpx[http2]>=0.26
 tenacity>=9.0
