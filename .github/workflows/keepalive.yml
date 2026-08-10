@@ -1,0 +1,37 @@
+name: keepalive
+
+# Scheduled workflows on a public repo are auto-disabled after 60 days with no
+# repository activity, and `schedule` only ever runs on the default branch. A
+# daily crawl that commits only to `data` could therefore switch itself off
+# silently -- the site would keep serving its last deploy and nothing would
+# say why.
+#
+# So: touch a file on the default branch once a month. It costs one commit and
+# it is the only thing standing between this project and quietly dying.
+
+on:
+  schedule:
+    - cron: "13 4 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Touch the heartbeat
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          date -u +%Y-%m-%d > .github/last-heartbeat
+          git add .github/last-heartbeat
+          if git diff --cached --quiet; then
+            echo "already beat today"
+          else
+            git commit -q -m "chore: monthly heartbeat, keeps the crawl schedule alive"
+            git push -q
+          fi
