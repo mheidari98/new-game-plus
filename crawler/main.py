@@ -27,6 +27,7 @@ from ngp.net import HttpClient
 from ngp.psplus import PlusIndex, fetch_all
 from ngp.publish import write_index
 from ngp.ratelimit import AdaptiveLimiter
+from ngp.ratings import Metacritic
 from ngp.store import StoreClient, money_to_cents
 
 log = logging.getLogger("ngp")
@@ -60,7 +61,7 @@ def crawl(args):
     previous = _read_previous_count(state_dir / "last_good.json")
 
     with HttpClient(limiter=limiter, proxy=args.proxy,
-                    direct_hosts=["playstation.com"]) as http:
+                    direct_hosts=["playstation.com", "metacritic.com"]) as http:
         store = StoreClient(http)
 
         log.info("fetching PS+ catalogues")
@@ -89,7 +90,15 @@ def crawl(args):
 
         enriched, failed = _enrich(store, cache, todo, rows, args.ttl)
 
-    games = _assemble(rows, cache, plus, weights, args.ttl)
+        matched, attempted = _enrich_critics(
+            Metacritic(http), cache, rows, args.ttl, args.critic_ttl,
+            args.limit or args.cap)
+        log.info("metacritic: %d of %d looked up matched", matched, attempted)
+        if attempted > 20 and matched == 0:
+            log.warning("metacritic matched nothing in %d lookups; "
+                        "quality scores will rest on store stars alone", attempted)
+
+    games = _assemble(rows, cache, plus, weights, args.ttl, args.critic_ttl)
     out = REPO / args.out
     stats = write_index(games, weights, out,
                         generated_at=datetime.now(timezone.utc).isoformat())
@@ -234,7 +243,44 @@ def _enrich(store, cache, todo, rows, ttl):
     return ok, fail
 
 
-def _assemble(rows, cache, plus, weights, ttl):
+def _enrich_critics(metacritic, cache, rows, ttl, critic_ttl, limit):
+    """Metacritic, one request per concept, on its own TTL.
+
+    A miss is stored exactly like a hit. Otherwise every run re-asks about the
+    same few hundred obscure titles that will never have a Metacritic entry.
+    """
+    todo = cache.due("critic", ttl_days=critic_ttl, limit=limit)
+
+    def one(cid):
+        row = rows.get(cid)
+        detail = cache.get("product", cid, ttl_days=ttl) or {}
+        name = detail.get("name") or (row and row["product"].get("name"))
+        if not name:
+            return None
+        try:
+            critic = metacritic.lookup(name, _release_year(detail.get("release")))
+        except Exception as exc:
+            log.warning("metacritic %s failed: %s", cid, exc)
+            return None
+        cache.put("critic", cid, {"score": critic.score, "title": critic.title,
+                                  "url": critic.url} if critic else {})
+        cache.mark("critic", cid)
+        return critic is not None
+
+    matched = 0
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for result in pool.map(one, todo):
+            if result:
+                matched += 1
+    return matched, len(todo)
+
+
+def _release_year(value):
+    year = (value or "")[:4]
+    return int(year) if year.isdigit() else None
+
+
+def _assemble(rows, cache, plus, weights, ttl, critic_ttl):
     """Join crawl output into publishable rows. No I/O beyond the cache."""
     games = []
     for cid, row in rows.items():
@@ -246,11 +292,13 @@ def _assemble(rows, cache, plus, weights, ttl):
             continue                      # "Unavailable"
 
         detail = cache.get("product", cid, ttl_days=ttl) or {}
+        critic = cache.get("critic", cid, ttl_days=critic_ttl) or {}
         member = plus.lookup(concept_id=cid, product_id=prod["id"])
-        q = quality(None, 0, detail.get("star_average"),
+        # None, not 0: the search response carries the metascore but not the
+        # review count, and quality() shrinks an unknown depth conservatively.
+        q = quality(critic.get("score"), None, detail.get("star_average"),
                     detail.get("star_count") or 0, weights)
         discount = int(round((base_cents - price_cents) / base_cents * 100)) if base_cents else 0
-        release = (detail.get("release") or "")[:4]
 
         games.append({
             "id": prod["id"],
@@ -267,8 +315,9 @@ def _assemble(rows, cache, plus, weights, ttl):
             "local_players": detail.get("local_players"),
             "psvr2": detail.get("psvr2"),
             "dualsense": bool(detail.get("dualsense")),
-            "release_year": int(release) if release.isdigit() else None,
+            "release_year": _release_year(detail.get("release")),
             "tier": tier_of(base_cents),
+            "critic_score": critic.get("score"),
             "quality": round(q.score, 1),
             "discount_depth": round(discount_depth(discount, weights), 1),
             "price_anchor": round(price_anchor(base_cents, price_cents, weights), 1),
@@ -291,6 +340,8 @@ def main(argv=None):
     p.add_argument("--limit", type=int, help="stop after N enrichments (iteration)")
     p.add_argument("--cap", type=int, default=25_000, help="max enrichments per run")
     p.add_argument("--ttl", type=float, default=30, help="detail cache TTL, days")
+    p.add_argument("--critic-ttl", type=float, default=14,
+                   help="Metacritic cache TTL, days")
     p.add_argument("--rate", type=float, default=1.0, help="starting req/s")
     p.add_argument("--max-rate", type=float, default=6.0, help="ceiling req/s")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:2080")

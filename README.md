@@ -12,8 +12,9 @@ Pages. No backend, no accounts, no server costs, ever.
 
 ## Status
 
-Milestone 1. The crawler runs daily and the site is up. Price history has
-just started accumulating, so anything historical is shallow and says so.
+Milestone 2. The crawler runs daily, the site is up, and the PS+ break-even
+calculator is live. Price history has just started accumulating, so anything
+historical is shallow and says so.
 
 ## What makes it different
 
@@ -33,6 +34,16 @@ $20, not already in PS+" is a query you currently cannot run anywhere.
 the final score. That makes the "I have PS+ Extra" toggle and the weight sliders real rather than
 cosmetic, and it means you can check the maths. `crawler/ngp/components.py` and
 `site/src/lib/score.ts` are pure functions with no I/O.
+
+## "Is PS+ worth it for you"
+
+**[PlatPrices](https://platprices.com) shipped this first**, and covers more regions than this
+does. It is here anyway because the difference is one of kind rather than of feature count:
+this version runs entirely in your browser against a list kept in `localStorage`, needs no
+account, and the whole computation is [one short pure file](site/src/lib/plusmath.ts) you can
+read in a minute. It counts today's price rather than the list price, gives a free-to-play
+catalogue game no credit, and counts nothing at all as covered by Essential — its monthly games
+rotate and are not a catalogue.
 
 ## Design constraints
 

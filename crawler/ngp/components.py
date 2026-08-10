@@ -102,13 +102,22 @@ def quality(critic_score, critic_count, star_average, star_count, weights: Weigh
 
     Missing components are dropped and the rest renormalised, so a game with
     only one source is not dragged toward zero by the absent one.
+
+    `critic_count=None` means "a score, of unknown depth" -- which is what
+    Metacritic's search response gives, since the review count lives on the
+    per-game page and fetching it would double the request budget. Such a
+    score is weighted as if it rested on exactly `critic_prior_weight`
+    reviews, so it lands halfway to the prior, and it can never on its own
+    count as strong evidence.
     """
     q = weights.quality
     parts = []          # (weight, score)
     detail = {}
+    has_critic = critic_score is not None and (critic_count is None or critic_count > 0)
 
-    if critic_score is not None and critic_count > 0:
-        shrunk = shrink(critic_score, critic_count,
+    if has_critic:
+        depth = q["critic_prior_weight"] if critic_count is None else critic_count
+        shrunk = shrink(critic_score, depth,
                         q["critic_prior_score"], q["critic_prior_weight"])
         parts.append((q["critic"], shrunk))
         detail["critic"] = round(shrunk, 2)
@@ -126,10 +135,13 @@ def quality(critic_score, critic_count, star_average, star_count, weights: Weigh
     total = sum(w for w, _ in parts)
     score = sum(w * s for w, s in parts) / total
 
-    has_critic = critic_score is not None and critic_count > 0
-    if has_critic and critic_count >= 20:
+    # "High" means either a deep critic consensus or two independent sources
+    # with real volume behind one of them. A score whose depth we never
+    # measured cannot reach it alone.
+    many_stars = (star_count or 0) >= 2000
+    if has_critic and ((critic_count or 0) >= 20 or many_stars):
         evidence = "high"
-    elif has_critic or (star_count or 0) >= 2000:
+    elif has_critic or many_stars:
         evidence = "medium"
     else:
         evidence = "low"

@@ -133,6 +133,36 @@ class TestQuality:
         assert a == b
 
 
+class TestUnknownCriticDepth:
+    """Metacritic's search response carries the metascore but not the review
+    count, and fetching the count would double the request budget. So the
+    count is genuinely unknown, and `None` says so rather than guessing."""
+
+    def test_unknown_depth_shrinks_halfway_to_the_prior(self, w):
+        # Weighted as if backed by exactly `critic_prior_weight` reviews, i.e.
+        # a 50/50 blend with the prior -- the conservative reading.
+        got = quality(critic_score=90, critic_count=None,
+                      star_average=None, star_count=0, weights=w)
+        assert got.parts["critic"] == pytest.approx(81.0)
+
+    def test_unknown_depth_scores_below_a_well_reviewed_identical_score(self, w):
+        unknown = quality(90, None, None, 0, w).score
+        known = quality(90, 120, None, 0, w).score
+        assert unknown < known
+
+    def test_unknown_depth_alone_is_never_high_evidence(self, w):
+        # We cannot claim depth we did not measure.
+        got = quality(90, None, 4.9, 12, w)
+        assert got.evidence == "medium"
+
+    def test_a_critic_score_plus_a_mass_of_stars_is_high_evidence(self, w):
+        # Two independent sources, one of them with real volume behind it.
+        assert quality(90, None, 4.6, 5000, w).evidence == "high"
+
+    def test_a_missing_score_is_still_missing(self, w):
+        assert quality(None, None, None, 0, w).evidence == "none"
+
+
 class TestWeightsLoading:
     def test_defaults_load_from_the_toml(self, w):
         assert w.final["quality"] == 0.45

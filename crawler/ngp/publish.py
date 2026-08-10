@@ -31,7 +31,7 @@ GZIP_BUDGET_BYTES = 819_200
 _SCALARS = [
     "id", "name", "price_cents", "base_cents", "discount_pct", "is_free",
     "plus_extra", "plus_classics", "local_players", "dualsense",
-    "release_year", "quality", "discount_depth", "price_anchor",
+    "release_year", "critic_score", "quality", "discount_depth", "price_anchor",
 ]
 _DICTED = ["genres", "esrb", "platforms", "tier", "psvr2", "evidence"]
 _MULTI = {"genres", "platforms"}      # lists per row; the rest are single values

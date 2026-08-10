@@ -18,6 +18,9 @@ export interface Row extends Game {
   psvr2: string | null;
   dualsense: boolean;
   tier: string | null;
+  /** Metascore, or null when nothing matched. Published so the quality
+   *  component can be checked against its source by hand. */
+  critic_score: number | null;
 }
 
 export interface Index {
@@ -45,6 +48,7 @@ export function decode(payload: any): Index {
       local_players: cols.local_players[i],
       dualsense: cols.dualsense[i],
       release_year: cols.release_year[i],
+      critic_score: cols.critic_score?.[i] ?? null,
       quality: cols.quality[i],
       discount_depth: cols.discount_depth[i],
       price_anchor: cols.price_anchor[i],

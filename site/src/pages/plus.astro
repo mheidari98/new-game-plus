@@ -1,0 +1,227 @@
+---
+import Base from '../layouts/Base.astro';
+import { decode, price } from '../lib/index';
+import raw from '../../public/index.json';
+
+const { rows } = decode(raw);
+const base = import.meta.env.BASE_URL;
+
+// Rendered server-side so the page says something useful with JS switched off.
+const inExtra = rows.filter((r) => r.plus_extra);
+const inClassics = rows.filter((r) => r.plus_classics && !r.plus_extra);
+const headline = [...inExtra]
+  .sort((a, b) => b.price_cents - a.price_cents)
+  .slice(0, 8);
+---
+<Base title="Is PlayStation Plus worth it for you?"
+      tagline="Pick the games you actually want and see whether the subscription pays for itself.">
+  <h1>Is PS Plus worth it <em>for you</em>?</h1>
+  <p class="lede">
+    Not in general — for your list. Add the games you were going to buy anyway. This page
+    checks which are already in the catalogue and compares that against the subscription
+    price. It runs in your browser; the list never leaves it.
+  </p>
+
+  <div id="app" data-src={`${base}index.json`}>
+    <noscript>
+      <p class="note">
+        The calculator needs JavaScript. Without it, here is the static version:
+        <strong>{inExtra.length}</strong> games in this snapshot are in the Extra catalogue
+        and <strong>{inClassics.length}</strong> more are in Classics.
+      </p>
+      <ul>
+        {headline.map((g) => <li>{g.name} — {price(g.price_cents)} today</li>)}
+      </ul>
+    </noscript>
+    <p class="loading">Loading the catalogue…</p>
+  </div>
+
+  <section class="fineprint">
+    <h2>What this does and does not count</h2>
+    <ul>
+      <li>
+        Only games in this index count. It covers the store's deals list plus the
+        free-to-play catalogue, not all ~12,000 PS4 and PS5 games, so the real Extra
+        catalogue is larger than what is matched here.
+      </li>
+      <li>
+        Savings use <strong>today's price</strong>, not the list price. What you avoid
+        paying is what it costs today, not what it cost at launch.
+      </li>
+      <li>
+        A free-to-play game in the catalogue counts for nothing. You were never going to
+        pay for it.
+      </li>
+      <li>
+        Essential covers no catalogue at all — its monthly games rotate and you keep them
+        only while you subscribe, so nothing on a wishlist can be "already included".
+      </li>
+      <li>
+        Catalogue membership is read from PlayStation's own feed on the day of the crawl.
+        Games leave the catalogue; this is a snapshot, not a promise.
+      </li>
+    </ul>
+    <p class="note">
+      <a href="https://platprices.com">PlatPrices</a> built this first and covers more
+      regions. The difference here is that it needs no account and the arithmetic is
+      <a href="https://github.com/mheidari98/new-game-plus/blob/main/site/src/lib/plusmath.ts">one
+      short file</a> you can read.
+    </p>
+  </section>
+
+  <style>
+    h1 em { font-style: normal; color: var(--accent); }
+    .loading { color: var(--muted); }
+    .note { color: var(--muted); font-size: 0.95rem; }
+    .picker { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;
+              margin: 1.5rem 0 0.5rem; }
+    .picker input[type=search] { flex: 1 1 16rem; padding: 0.5rem 0.7rem; font: inherit;
+              border: 1px solid var(--line); border-radius: 6px;
+              background: var(--bg); color: var(--fg); }
+    .suggest { list-style: none; padding: 0; margin: 0.4rem 0 0; display: grid; gap: 0.25rem; }
+    .suggest button { width: 100%; text-align: left; font: inherit; cursor: pointer;
+              background: var(--card); border: 1px solid var(--line);
+              border-radius: 6px; padding: 0.45rem 0.7rem; color: inherit; }
+    .suggest button:hover { border-color: var(--accent); color: var(--accent); }
+    .tiers { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1.5rem 0 0.75rem; }
+    .tiers label { display: flex; gap: 0.35rem; align-items: center; font-size: 0.95rem; }
+    .tiers input[type=number] { width: 5.5rem; padding: 0.35rem; font: inherit;
+              border: 1px solid var(--line); border-radius: 6px;
+              background: var(--bg); color: var(--fg); }
+    .verdict { background: var(--card); border: 1px solid var(--line);
+               border-radius: 10px; padding: 1rem 1.1rem; margin: 1rem 0; }
+    .verdict h2 { margin: 0 0 0.3rem; font-size: 1.25rem; letter-spacing: -0.02em; }
+    .yes { color: var(--free); }
+    .no { color: var(--fg); }
+    .wishlist { list-style: none; padding: 0; display: grid; gap: 0.35rem; margin: 1rem 0; }
+    .wishlist li { display: flex; gap: 0.6rem; align-items: baseline;
+                   border-bottom: 1px solid var(--line); padding-bottom: 0.35rem; }
+    .wishlist .name { flex: 1; }
+    .wishlist .tag { border: 1px solid var(--line); border-radius: 999px;
+                     padding: 0.05em 0.5em; font-size: 0.78rem; }
+    .wishlist .in { border-color: var(--free); color: var(--free); }
+    .wishlist button { background: none; border: 0; color: var(--muted);
+                       cursor: pointer; font: inherit; }
+    .wishlist button:hover { color: var(--accent); }
+    .fineprint { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.5rem; }
+    .fineprint h2 { font-size: 1.1rem; }
+    .fineprint li { color: var(--muted); font-size: 0.95rem; margin: 0.4rem 0; }
+  </style>
+
+  <script>
+    import { decode, price } from '../lib/index';
+    import { evaluate, TIERS, type Pick, type Tier } from '../lib/plusmath';
+
+    const app = document.getElementById('app')!;
+    const STORE_KEY = 'ngp:wishlist';
+
+    const load = (): string[] => {
+      try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); }
+      catch { return []; }              // corrupt or blocked storage is an empty list
+    };
+    const save = (ids: string[]) => {
+      try { localStorage.setItem(STORE_KEY, JSON.stringify(ids)); } catch { /* private mode */ }
+    };
+
+    const res = await fetch(app.dataset.src!);
+    const { rows } = decode(await res.json());
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    let chosen = load().filter((id) => byId.has(id));
+    let tier: Tier = { ...TIERS[1] };
+    let query = '';
+
+    app.innerHTML = `
+      <div class="picker">
+        <input type="search" id="q" placeholder="Add a game you were going to buy…" />
+      </div>
+      <ul class="suggest" id="suggest"></ul>
+      <div class="tiers" id="tiers"></div>
+      <div class="verdict" id="verdict"></div>
+      <ul class="wishlist" id="wishlist"></ul>`;
+
+    const el = (id: string) => document.getElementById(id)!;
+
+    el('tiers').innerHTML = TIERS.map((t) => `
+      <label>
+        <input type="radio" name="tier" value="${t.id}" ${t.id === tier.id ? 'checked' : ''} />
+        ${t.label}
+      </label>`).join('') + `
+      <label>$ per year
+        <input type="number" id="cost" min="0" step="1" value="${(tier.yearlyCents / 100).toFixed(0)}" />
+      </label>`;
+
+    function render() {
+      const picks: Pick[] = chosen.map((id) => byId.get(id)!);
+      const verdict = evaluate(picks, tier);
+      const net = Math.abs(verdict.netCents);
+
+      el('verdict').innerHTML = verdict.worthIt
+        ? `<h2 class="yes">Yes — by ${price(net)}</h2>
+           <p>${verdict.covered.length} of your ${picks.length} game${picks.length === 1 ? '' : 's'}
+           ${verdict.covered.length === 1 ? 'is' : 'are'} in the ${tier.label} catalogue,
+           worth ${price(verdict.coveredCents)} at today's prices against
+           ${price(verdict.costCents)} a year.</p>
+           <p class="note">${tier.note}</p>`
+        : `<h2 class="no">${picks.length ? 'Not yet' : 'Add some games'} — ${price(net)} short</h2>
+           <p>${picks.length
+              ? `Only ${price(verdict.coveredCents)} of your list is in the ${tier.label} catalogue,
+                 against ${price(verdict.costCents)} a year. Buying the ones you want outright is
+                 cheaper.`
+              : `A subscription costs ${price(verdict.costCents)} a year. Add what you were going
+                 to buy and see whether the catalogue already covers it.`}</p>
+           <p class="note">${tier.note}</p>`;
+
+      el('wishlist').innerHTML = picks.map((g) => {
+        const covered = verdict.covered.includes(g);
+        return `<li>
+          <span class="name">${g.name}</span>
+          <span class="tag ${covered ? 'in' : ''}">${covered ? 'in the catalogue' : price(g.price_cents)}</span>
+          <button data-remove="${g.id}" aria-label="Remove ${g.name}">remove</button>
+        </li>`;
+      }).join('');
+
+      const q = query.trim().toLowerCase();
+      el('suggest').innerHTML = !q ? '' : rows
+        .filter((r) => r.name.toLowerCase().includes(q) && !chosen.includes(r.id))
+        .slice(0, 8)
+        .map((r) => `<li><button data-add="${r.id}">${r.name} — ${price(r.price_cents)}${
+          r.plus_extra ? ' · in Extra' : r.plus_classics ? ' · in Classics' : ''}</button></li>`)
+        .join('');
+    }
+
+    app.addEventListener('click', (e) => {
+      const button = (e.target as HTMLElement).closest('button');
+      if (!button) return;
+      const add = button.dataset.add;
+      const remove = button.dataset.remove;
+      if (add) { chosen = [...chosen, add]; query = ''; (el('q') as HTMLInputElement).value = ''; }
+      if (remove) chosen = chosen.filter((id) => id !== remove);
+      save(chosen);
+      render();
+    });
+
+    el('q').addEventListener('input', (e) => {
+      query = (e.target as HTMLInputElement).value;
+      render();
+    });
+
+    el('tiers').addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      if (input.name !== 'tier') return;
+      // Switching tier resets the price to that tier's list price; editing it
+      // afterwards wins, because a 12-month card rarely costs list.
+      tier = { ...TIERS.find((t) => t.id === input.value)! };
+      (el('cost') as HTMLInputElement).value = (tier.yearlyCents / 100).toFixed(0);
+      render();
+    });
+
+    el('cost').addEventListener('input', (e) => {
+      const dollars = Number((e.target as HTMLInputElement).value);
+      tier = { ...tier, yearlyCents: Math.max(0, Math.round(dollars * 100)) };
+      render();
+    });
+
+    render();
+  </script>
+</Base>
