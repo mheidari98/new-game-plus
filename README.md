@@ -129,7 +129,7 @@ spends ~0.8 s per request on the wire.
 
 ```bash
 make setup
-make test                    # 292 pytest + 44 vitest + invariants, no network
+make test                    # 310 pytest + 44 vitest + invariants, no network
 make check                   # invariants only, ~1s
 ```
 
