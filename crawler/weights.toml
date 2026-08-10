@@ -1,0 +1,48 @@
+# Scoring weights -- the single source of truth.
+#
+# This file is copied verbatim into the published index.json as `meta.weights`,
+# and the browser reads the weights from there rather than from its own copy.
+# Site and crawler therefore cannot drift: there is only one copy at runtime.
+#
+# The crawler publishes score *components*; the browser combines them. That is
+# what makes the "I have PS+ Extra" toggle and the weight sliders real rather
+# than cosmetic, and it means the ranking can be checked by hand.
+
+[quality]
+# Bayesian shrinkage: a 96 from three reviews is weaker evidence than a 91
+# from 120, and the score should say so.
+critic_prior_score = 72.0
+critic_prior_weight = 8.0
+star_prior_rating = 4.15
+star_prior_weight = 250.0
+
+# Component weights, renormalised when a source is missing.
+critic = 0.60
+stars = 0.40
+
+[deal]
+# Diminishing returns: 50% off is good, 90% off is not twice as good.
+discount_exponent = 0.72
+# Absolute money saved, log-scaled against this reference saving.
+anchor_reference_saved = 55.0
+
+discount_depth = 0.60
+price_anchor = 0.40
+
+[final]
+quality = 0.45
+deal = 0.30
+value = 0.25
+
+[adjust]
+# You can already play it, so paying is only worth it to keep it after it
+# rotates out. Applied in the browser when the PS+ Extra toggle is on.
+psplus_extra = 0.30
+psplus_classics = 0.85
+# A big percentage off an eight-year-old game means less.
+age_full_credit_years = 3.0
+age_min_multiplier = 0.90
+ps4_only = 0.96
+# Thin or absent review evidence.
+thin_evidence = 0.80
+no_evidence = 0.68
