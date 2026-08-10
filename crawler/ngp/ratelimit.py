@@ -60,6 +60,7 @@ class AdaptiveLimiter:
         self._next_at = 0.0
         self._streak = 0            # consecutive clean responses
         self._refusals_in_a_row = 0
+        self._cut_at_request = -1
 
     def wait(self):
         """Block until the next request is allowed out. Safe to share across threads."""
@@ -88,9 +89,18 @@ class AdaptiveLimiter:
             self.refusals += 1
             self._refusals_in_a_row += 1
             self._streak = 0
-            # Remember where the wall is so the ramp stops short of it.
-            self.effective_ceiling = max(self._floor, self.rate * 0.9)
-            self.rate = max(self._floor, self.rate * self._decrease_factor)
+
+            # Cut once per round of in-flight requests, not once per refusal.
+            # The workers share this limiter, so one wall draws a burst of
+            # refusals all issued at the same rate; cutting for each of them
+            # reaches the floor in five and drags the remembered ceiling down
+            # with it, where on_success can never climb past. TCP halves once
+            # per RTT rather than once per lost packet for the same reason.
+            if self.requests > self._cut_at_request:
+                # Remember where the wall is so the ramp stops short of it.
+                self.effective_ceiling = max(self._floor, self.rate * 0.9)
+                self.rate = max(self._floor, self.rate * self._decrease_factor)
+                self._cut_at_request = self.requests
 
             # Apply from now, discarding the slot scheduled at the refused rate.
             hold = 1.0 / self.rate if self.rate > 0 else 0.0

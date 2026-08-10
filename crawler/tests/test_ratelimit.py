@@ -146,6 +146,7 @@ class TestMultiplicativeDecrease:
     def test_rate_never_drops_below_the_floor(self):
         rl, _ = limiter(start=1.0, floor=0.25, max_consecutive_refusals=99)
         for _ in range(20):
+            rl.wait()               # as net.py drives it: pace, send, then refuse
             rl.on_refused()
         assert rl.rate == pytest.approx(0.25)
 
@@ -190,6 +191,7 @@ class TestRememberedCeiling:
                         increase_by=0.25, max_consecutive_refusals=99)
         early = late = 0
         for i in range(4000):
+            rl.wait()
             if rl.rate > 2.0:
                 rl.on_refused()
                 if i < 500:
@@ -268,3 +270,38 @@ class TestObservability:
         rl.on_refused()
         assert rl.requests == 2
         assert rl.refusals == 1
+
+
+class TestConcurrentRefusals:
+    """The workers share one limiter, so hitting the wall once draws a burst of
+    refusals that were all issued at the same rate. Cutting for each of them
+    reaches the floor in five and takes the remembered ceiling down with it,
+    leaving a rate nothing can climb back from."""
+
+    def test_one_wall_costs_one_halving(self):
+        rl, _ = limiter(start=8.0, ceiling=12.0, max_consecutive_refusals=99)
+        for _ in range(16):          # 16 workers release their requests
+            rl.wait()
+        for _ in range(16):          # ...and every one of them is refused
+            rl.on_refused()
+        assert rl.rate == pytest.approx(4.0)
+        assert rl.effective_ceiling == pytest.approx(7.2)
+
+    def test_a_burst_does_not_strand_the_rate_at_the_floor(self):
+        rl, _ = limiter(start=6.0, ceiling=12.0, floor=0.25, increase_after=1,
+                        increase_by=0.25, max_consecutive_refusals=99)
+        for _ in range(16):
+            rl.wait()
+        for _ in range(16):
+            rl.on_refused()
+        for _ in range(1000):
+            rl.on_success()
+        assert rl.rate > 3.0, "a single burst must not cost the rest of the run"
+
+    def test_a_refusal_after_a_new_request_still_cuts_again(self):
+        rl, _ = limiter(start=8.0, ceiling=12.0, max_consecutive_refusals=99)
+        rl.wait()
+        rl.on_refused()              # 8 -> 4
+        rl.wait()                    # a request goes out at the new rate
+        rl.on_refused()              # fresh evidence, so cut again: 4 -> 2
+        assert rl.rate == pytest.approx(2.0)
