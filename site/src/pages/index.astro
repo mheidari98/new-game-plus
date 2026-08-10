@@ -46,7 +46,7 @@ const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
     <h2>If you have PS Plus Extra</h2>
     <p>
       <strong>{inPlus.length}</strong> games in this snapshot are in the Extra catalogue —
-      about <strong>${(plusValue / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+      about <strong>${(plusValue / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>{' '}
       at list price. Do not buy these; you can already play them.
     </p>
     <p class="note">
