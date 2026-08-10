@@ -15,6 +15,7 @@ Tier mapping, from the page's own bundle:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 GAMESLIST_URL = "https://www.playstation.com/bin/imagic/gameslist"
@@ -72,29 +73,49 @@ def parse_feed(payload, list_name) -> list[PlusEntry]:
     return out
 
 
-def fetch_all(http, locale="en-us") -> dict[str, list[PlusEntry]]:
+# The Extra feed 404s intermittently: it went down on one US-runner crawl and
+# answered with 471 entries minutes later. net.py cannot retry this for us --
+# a 404 anywhere else is a real absence, not a blip -- and losing it costs the
+# whole run, so it is asked again here before the crawl is abandoned.
+EXTRA_ATTEMPTS = 4
+EXTRA_BACKOFF_SECONDS = 20
+
+
+def fetch_all(http, locale="en-us", sleep=time.sleep) -> dict[str, list[PlusEntry]]:
     """One request per list -- the endpoint ignores every batching attempt.
 
-    Raises if the Extra catalogue comes back empty. Measured: this feed 404'd
-    from a US runner on one run and returned 471 entries minutes later, and a
-    silent empty list would mark the entire store as not-in-PS+ -- a wrong
-    answer everywhere, which is worse than no answer.
+    Raises if the Extra catalogue cannot be read. A silent empty list would
+    mark the entire store as not-in-PS+, which is a wrong answer everywhere
+    and worse than no answer.
     """
+    def fetch(category):
+        return http.get_json(
+            f"{GAMESLIST_URL}?locale={locale}&categoryList={category}",
+            headers={"accept": "application/json"},
+        )
+
     out = {}
     for key, category in LISTS.items():
-        try:
-            payload = http.get_json(
-                f"{GAMESLIST_URL}?locale={locale}&categoryList={category}",
-                headers={"accept": "application/json"},
-            )
-            out[key] = parse_feed(payload, key)
-        except Exception as exc:
-            if key == "extra":
-                raise PlusFeedUnavailable(f"Extra catalogue unreachable: {exc}") from exc
-            out[key] = []       # Classics and Monthly are nice to have
+        if key != "extra":
+            try:
+                out[key] = parse_feed(fetch(category), key)
+            except Exception:
+                out[key] = []       # Classics and Monthly are nice to have
+            continue
 
-    if not out["extra"]:
-        raise PlusFeedUnavailable("Extra catalogue came back empty")
+        problem = "came back empty"
+        for attempt in range(EXTRA_ATTEMPTS):
+            if attempt:
+                sleep(EXTRA_BACKOFF_SECONDS)
+            try:
+                out[key] = parse_feed(fetch(category), key)
+            except Exception as exc:
+                problem, out[key] = str(exc), []
+            if out[key]:
+                break
+        if not out[key]:
+            raise PlusFeedUnavailable(
+                f"Extra catalogue unreadable after {EXTRA_ATTEMPTS} attempts: {problem}")
     return out
 
 

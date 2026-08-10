@@ -119,14 +119,14 @@ class TestTransientFailure:
             def get_json(self, url, headers=None):
                 return []
         with pytest.raises(PlusFeedUnavailable):
-            fetch_all(DeadHttp())
+            fetch_all(DeadHttp(), sleep=lambda _: None)
 
     def test_transient_error_on_extra_raises(self):
         class BrokenHttp:
             def get_json(self, url, headers=None):
                 raise RuntimeError("HTTP 404")
         with pytest.raises(PlusFeedUnavailable):
-            fetch_all(BrokenHttp())
+            fetch_all(BrokenHttp(), sleep=lambda _: None)
 
     def test_a_missing_optional_list_does_not_raise(self):
         # Classics and Monthly are nice to have; Extra is load-bearing.
@@ -135,9 +135,56 @@ class TestTransientFailure:
                 if "plus-games-list" in url:
                     return feed(entry(1), entry(2))
                 raise RuntimeError("HTTP 500")
-        got = fetch_all(PartialHttp())
+        got = fetch_all(PartialHttp(), sleep=lambda _: None)
         assert len(got["extra"]) == 2
         assert got["classics"] == []
+
+    def test_extra_is_asked_again_before_the_run_is_abandoned(self):
+        # A 404 here costs the whole crawl, and the feed has answered on the
+        # next try. net.py cannot do this: a 404 elsewhere is a real absence.
+        class FlakyHttp:
+            attempts = 0
+
+            def get_json(self, url, headers=None):
+                if "plus-games-list" not in url:
+                    return feed(entry(9))
+                FlakyHttp.attempts += 1
+                if FlakyHttp.attempts < 3:
+                    raise RuntimeError("HTTP 404")
+                return feed(entry(1))
+
+        got = fetch_all(FlakyHttp(), sleep=lambda _: None)
+        assert len(got["extra"]) == 1
+        assert FlakyHttp.attempts == 3
+
+    def test_an_empty_extra_response_is_retried_too(self):
+        # 200-with-nothing is the same outage wearing a different status.
+        class EmptyThenFull:
+            attempts = 0
+
+            def get_json(self, url, headers=None):
+                if "plus-games-list" not in url:
+                    return feed(entry(9))
+                EmptyThenFull.attempts += 1
+                return [] if EmptyThenFull.attempts < 2 else feed(entry(1))
+
+        got = fetch_all(EmptyThenFull(), sleep=lambda _: None)
+        assert len(got["extra"]) == 1
+
+    def test_the_optional_lists_are_not_retried(self):
+        # Spending retries on data the run does not need is just load.
+        class ClassicsDown:
+            attempts = 0
+
+            def get_json(self, url, headers=None):
+                if "plus-games-list" in url:
+                    return feed(entry(1))
+                ClassicsDown.attempts += 1
+                raise RuntimeError("HTTP 500")
+
+        got = fetch_all(ClassicsDown(), sleep=lambda _: None)
+        assert got["classics"] == []
+        assert ClassicsDown.attempts == 2      # classics and monthly, once each
 
 
 class TestTierFlags:
