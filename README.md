@@ -32,7 +32,7 @@ console prices since 2014, PlatPrices has price history back to 2020 and already
 break-even calculator, Deku Deals covers PlayStation with alerts. This project does not try to
 beat them at price history, and says so.
 
-Two things genuinely are not served elsewhere:
+Three things genuinely are not served elsewhere:
 
 **Local co-op filtering over the priced catalogue.** Co-Optimus has the co-op data but no prices
 or PS+ status; the price trackers have prices but no co-op data at all. Sony publishes a
@@ -89,7 +89,7 @@ rotate and are not a catalogue.
 
 ```bash
 make setup
-make test                    # 289 pytest + 44 vitest + invariants, no network
+make test                    # 292 pytest + 44 vitest + invariants, no network
 make check                   # invariants only, ~1s
 ```
 
