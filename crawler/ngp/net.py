@@ -46,7 +46,8 @@ class Response:
 class HttpError(RuntimeError):
     def __init__(self, status: int, url: str, body: str):
         super().__init__(f"HTTP {status} for {url}: {body[:200]}")
-        self.status, self.url = status, body and url or url
+        self.status = status
+        self.url = url
 
 
 class _Retryable(HttpError):
