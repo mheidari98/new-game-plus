@@ -120,5 +120,16 @@ is never marked down for data *we* do not have. A null and a zero are different 
 `ngp/history.py` is the only thing here that accumulates. Every other source is re-fetched, so a
 bug elsewhere costs a re-crawl and a bug there loses data permanently.
 
-If you raise the rate ceiling, raise the worker count with it: `workers ≈ ceiling × latency`,
-and measured latency is ~0.8s. Extra workers past that just queue on the limiter.
+**Pacing is per host.** Each host in `PACED_HOSTS` gets its own `AdaptiveLimiter`, because they
+are different companies and a refusal from one says nothing about the other. Do not go back to
+one shared bucket: it made Metacritic's 5,000 requests queue behind the store's.
+
+**Do not split a source into its own sequential pass.** Per-host limiters only pay off if the
+hosts are exercised at the same time. `_enrich` deliberately does store detail, stars and
+Metacritic in *one* task per concept — as two passes their rates apply end to end and each host
+idles through the other's phase. It also keeps Metacritic's year disambiguation working, since
+the release date it needs is fetched moments earlier in the same task.
+
+Worker count comes from `net.workers_for(ceiling, task_requests, host_requests)` — never a
+literal. A worker blocked on Metacritic is not fetching from the store, so a multi-host task
+needs a wider pool than `ceiling × latency`. Measured latency is ~0.8s.

@@ -27,8 +27,13 @@ about the same few hundred titles that will never have an entry.
 A transport failure is not a refusal. The host never answered, so it says nothing about our
 pace: `net.py` retries it like a 502 and leaves the limiter alone.
 
-HowLongToBeat gets its own `HttpClient` and its own much slower limiter, single-threaded. It is
-not sharing the store's 6 req/s.
+HowLongToBeat gets its own `HttpClient` and its own much slower limiter, single-threaded, and it
+runs in a thread alongside the store passes rather than after them. It is not sharing the store's
+rate, and it should not be adding its wall clock to the store's either.
+
+Every host is paced separately, so anything that talks to a second host belongs *in* the existing
+per-concept task, not in a pass of its own. Sequential passes make the per-host rates apply end
+to end, which is the thing the per-host limiters exist to avoid.
 
 `metGetConceptById` is redundant — `metGetProductById` returns the same fields plus the concept
 id. Two operations per product, not three.

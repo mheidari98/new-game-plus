@@ -7,7 +7,7 @@ tests are deterministic and instant.
 
 import pytest
 
-from ngp.net import HttpClient, HttpError, Response, TransportFailure
+from ngp.net import HttpClient, HttpError, Response, TransportFailure, workers_for
 from ngp.ratelimit import AdaptiveLimiter, RateLimitExceeded
 
 
@@ -204,6 +204,64 @@ class TestTransportFailures:
         with pytest.raises(ValueError):
             c.get("https://example.test/a")
         assert len(t.calls) == 1
+
+
+class TestPerHostPacing:
+    """PlayStation and Metacritic are different companies with different
+    infrastructure. Making Metacritic's 5,000 requests queue behind
+    PlayStation's token bucket costs ~14 minutes a run and buys nothing, and a
+    refusal from one has no bearing on how fast the other wants to be asked."""
+
+    def test_each_host_gets_its_own_pacing(self):
+        a, b = AdaptiveLimiter(start=1.0, jitter=0.0), AdaptiveLimiter(start=1.0, jitter=0.0)
+        c = HttpClient(limiter=AdaptiveLimiter(), transport=FakeTransport(),
+                       limiters={"one.test": a, "two.test": b}, sleep=lambda s: None)
+        c.get("https://one.test/x")
+        c.get("https://api.two.test/x")
+        assert (a.requests, b.requests) == (1, 1)
+
+    def test_a_refusal_slows_only_the_host_that_sent_it(self):
+        a, b = AdaptiveLimiter(start=4.0, jitter=0.0), AdaptiveLimiter(start=4.0, jitter=0.0)
+        c = HttpClient(limiter=AdaptiveLimiter(),
+                       transport=FakeTransport(refused(429), ok()),
+                       limiters={"one.test": a, "two.test": b}, sleep=lambda s: None)
+        c.get("https://one.test/x")
+        assert a.rate < 4.0
+        assert b.rate == 4.0, "an unrelated host must not be punished"
+
+    def test_an_unlisted_host_falls_back_to_the_shared_limiter(self):
+        shared = AdaptiveLimiter(start=1.0, jitter=0.0)
+        c = HttpClient(limiter=shared, transport=FakeTransport(),
+                       limiters={"one.test": AdaptiveLimiter()}, sleep=lambda s: None)
+        c.get("https://elsewhere.test/x")
+        assert shared.requests == 1
+
+
+class TestWorkerSizing:
+    """workers x latency must not exceed the ceiling or they just queue on the
+    limiter; below it, the ceiling is unreachable however fast the host is
+    willing to answer. Encoded rather than left as prose, because raising one
+    without the other is the easy mistake."""
+
+    def test_matches_the_ceiling_at_the_measured_latency(self):
+        assert workers_for(6.0) == 5      # 6 x 0.8 = 4.8
+        assert workers_for(12.0) == 10
+
+    def test_widens_when_a_task_also_waits_on_another_host(self):
+        # 2 store requests + 1 Metacritic. A worker blocked on Metacritic is
+        # not fetching from the store, so the pool has to be wider than the
+        # store's rate alone suggests.
+        assert workers_for(6.0, task_requests=3, host_requests=2) == 8
+        assert workers_for(12.0, task_requests=3, host_requests=2) == 15
+
+    def test_one_request_per_task_is_just_ceiling_times_latency(self):
+        assert workers_for(6.0, task_requests=1, host_requests=1) == workers_for(6.0)
+
+    def test_never_drops_below_one(self):
+        assert workers_for(0.25) == 1
+
+    def test_is_capped_so_a_typo_cannot_open_a_hundred_threads(self):
+        assert workers_for(1000.0) == 16
 
 
 class TestProxy:

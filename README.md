@@ -67,9 +67,45 @@ rotate and are not a catalogue.
 |---|---|
 | Catalogue | 4,337 deals products → 2,741 game-like, plus 252 free-to-play; **12,736 concepts** with `--backfill` |
 | Enumerating all of it | **50 requests** — price-bucket facet slicing, because pagination stops at 10,000 |
-| Published payload | 2,369 games → 97 KB gzipped · **12,732 games → 342 KB, 42% of the 800 KB budget** |
+| Published payload | **12,732 games → 392,801 B gzipped, 48% of the 800 KB budget** |
 | Site build | **2,374 pages in 2.0 s** |
-| A full crawl | ~7,000 requests, 0 retries, 0 refusals, limiter settled at its 6.00 req/s ceiling |
+| Full backfill run | **15,048 requests, 0 retries, 0 refusals**, 55 min |
+
+## Why the crawl takes what it takes
+
+Measured on the run above, which is what the pacing was then tuned against:
+
+| Phase | Requests | Wall clock |
+|---|---|---|
+| Enumeration + price-bucket sweep | 50 | 3 min |
+| Store detail + stars, then Metacritic | 15,048 | **45 min** |
+| HowLongToBeat | 416 | 8 min |
+
+Three things were wrong with that, and none of them was the request count:
+
+1. **One token bucket for every host.** Metacritic's 5,000 requests queued behind the store's
+   10,048 for no reason — they are different companies. Each host now has its own
+   `AdaptiveLimiter`, so a refusal from one no longer slows the other either.
+2. **Per-host pacing pays nothing if the hosts take turns.** As two sequential passes the rates
+   applied end to end. `_enrich` now does store detail, stars and Metacritic in *one* task per
+   concept, so both rates apply at once and the phase costs as long as the busier host alone.
+   It also fixed a latent accuracy problem: Metacritic's year disambiguation needs the release
+   date, which is now fetched moments earlier in the same task.
+3. **HowLongToBeat ran last, alone.** It has its own client and its own deliberately slow
+   limiter, so it now runs in a thread beside the store passes and its 8 minutes vanish inside
+   theirs.
+
+The ceiling was raised from 6 to **12 req/s per host** on evidence rather than optimism: two
+production runs totalling ~20,000 requests both settled at exactly 6.00 with **zero refusals**,
+which means 6 was a cap we chose, not a wall the store pushed back with. Finding the real one is
+what the AIMD limiter is for — the first 429 or 403 halves the rate and pins the ceiling at 0.9×
+the refused rate for the rest of the run, so overshooting costs a handful of refusals rather than
+an IP. Every run prints the rate each host settled at, and the wall if it found one; if a run
+ever reports a wall below 12, lower `--max-rate` to it.
+
+Worker count is derived, never a literal — `net.workers_for(ceiling, task_requests,
+host_requests)`. Raising the ceiling without widening the pool buys nothing, because a thread
+spends ~0.8 s per request on the wire.
 
 ## Design constraints
 

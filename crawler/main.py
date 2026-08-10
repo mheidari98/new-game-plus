@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,7 @@ from ngp.features import decode_features
 from ngp.guard import PublishBlocked, check_publishable
 from ngp.hltb import HowLongToBeat
 from ngp.igdb import Igdb
-from ngp.net import HttpClient
+from ngp.net import HttpClient, workers_for
 from ngp.psplus import PlusIndex, fetch_all
 from ngp.publish import render, save
 from ngp.ratelimit import AdaptiveLimiter
@@ -51,9 +52,10 @@ PRICE_FACET = "webBasePrice"
 # set is what the site leads with, and it is at most ~4,500 rows.
 CATALOGUE_RANK_BASE = 100_000
 
-# Workers x latency must not exceed the limiter's ceiling or they just queue.
-# Measured latency ~0.8s, ceiling 6 req/s -> 5.
-WORKERS = 5
+# Hosts paced independently. They are different companies with different
+# infrastructure, and making Metacritic's ~5,000 requests queue behind the
+# store's token bucket cost ~14 minutes a run for nothing.
+PACED_HOSTS = ("playstation.com", "metacritic.com")
 
 
 def tier_of(base_cents):
@@ -67,14 +69,22 @@ def tier_of(base_cents):
 
 def crawl(args):
     weights = Weights.defaults()
-    limiter = AdaptiveLimiter(start=args.rate, ceiling=args.max_rate)
+    limiters = {host: AdaptiveLimiter(start=args.rate, ceiling=args.max_rate)
+                for host in PACED_HOSTS}
+    # A task makes 3 requests -- product, stars, Metacritic -- of which 2 are
+    # paced against the store, so the pool has to be wider than the store's
+    # rate alone would suggest.
+    workers = workers_for(args.max_rate, task_requests=3, host_requests=2)
     state_dir = (REPO / args.cache).parent
     state_dir.mkdir(parents=True, exist_ok=True)
     cache = Cache(REPO / args.cache)
     previous = _read_previous_count(state_dir / "last_good.json")
+    log.info("pacing: %d workers, each host ramping from %.2f toward %.2f req/s",
+             workers, args.rate, args.max_rate)
 
-    with HttpClient(limiter=limiter, proxy=args.proxy,
-                    direct_hosts=["playstation.com", "metacritic.com"]) as http:
+    with HttpClient(limiter=AdaptiveLimiter(start=args.rate, ceiling=args.max_rate),
+                    limiters=limiters, proxy=args.proxy,
+                    direct_hosts=list(PACED_HOSTS)) as http:
         store = StoreClient(http)
 
         log.info("fetching PS+ catalogues")
@@ -99,19 +109,21 @@ def crawl(args):
 
         rows = _rank_and_seed(cache, products, concept_of)
 
+        # HowLongToBeat has its own client, its own much slower limiter and its
+        # own host, so it has no reason to wait for the store passes. Run it
+        # alongside them and its ~9 minutes disappear inside theirs.
+        playtime = threading.Thread(target=_enrich_playtime,
+                                    args=(cache, rows, args), daemon=True)
+        if args.playtime:
+            playtime.start()
+
         if args.backfill:
             added, unreleased = _extend_to_catalogue(store, cache, rows)
             log.info("catalogue: +%d concepts beyond the deals set, %d unreleased "
                      "concepts skipped (no product to price or enrich)", added, unreleased)
 
-        todo = cache.due("product", ttl_days=args.ttl, limit=args.limit or args.cap)
-        log.info("enriching %d of %d", len(todo), len(rows))
-
-        enriched, failed = _enrich(store, cache, todo, rows, args.ttl)
-
-        matched, attempted = _enrich_critics(
-            Metacritic(http), cache, rows, args.ttl, args.critic_ttl,
-            args.limit or args.cap)
+        enriched, failed, matched, attempted = _enrich(
+            store, Metacritic(http), cache, rows, args, workers)
         log.info("metacritic: %d of %d looked up matched", matched, attempted)
         if attempted > 20 and matched == 0:
             log.warning("metacritic matched nothing in %d lookups; "
@@ -120,7 +132,7 @@ def crawl(args):
         _enrich_editorial(Igdb(http), cache, rows, args)
 
     if args.playtime:
-        _enrich_playtime(cache, rows, args)
+        playtime.join()          # its rows have to be cached before assembly
 
     games = _assemble(rows, cache, plus, weights, args)
 
@@ -153,8 +165,12 @@ def crawl(args):
     log.info("published %d games: %d B raw, %d B gzipped (%.0f%% of budget)",
              stats["count"], stats["raw_bytes"], stats["gzip_bytes"],
              100 * stats["gzip_bytes"] / 819_200)
-    log.info("http: %s | limiter settled at %.2f req/s",
-             http.stats, limiter.rate)
+    # Print what each host actually tolerated: the discovered wall is the
+    # only honest input to tuning --max-rate for the next run.
+    log.info("http: %s | %s", http.stats, " | ".join(
+        f"{host} settled at {lim.rate:.2f} req/s"
+        f"{'' if lim.refusals == 0 else f' after {lim.refusals} refusals, wall at {lim.effective_ceiling:.2f}'}"
+        for host, lim in limiters.items()))
     cache.close()
     return stats
 
@@ -317,80 +333,108 @@ def _extend_to_catalogue(store, cache, rows):
     return len(added), unreleased
 
 
-def _enrich(store, cache, todo, rows, ttl):
-    """Per-concept detail. Threads share one limiter, so the aggregate rate
-    is governed exactly as it would be single-threaded."""
-    ok = fail = 0
+def _enrich(store, metacritic, cache, rows, args, workers):
+    """Everything a concept needs, in one task: store detail, store stars and
+    the Metacritic lookup.
+
+    Merged rather than run as two passes, because the hosts are paced
+    independently. As two passes their rates apply end to end -- 10,000 store
+    requests, *then* 5,000 Metacritic ones -- and the second host sits idle
+    throughout the first. Merged, both rates apply at once and the run takes
+    as long as the busier host alone.
+
+    It also keeps Metacritic's disambiguation working. The year that separates
+    the 2001 Silent Hill 2 from the 2024 remake comes from the product detail
+    fetched moments earlier in this same task; a concurrent pass would race it
+    and match on the title alone.
+
+    The two sources keep their own TTLs, so a concept can be due for one and
+    fresh for the other.
+    """
+    limit = args.limit or args.cap
+    due_detail = cache.due("product", ttl_days=args.ttl, limit=limit)
+    due_critic = cache.due("critic", ttl_days=args.critic_ttl, limit=limit)
+    detail_set, critic_set = set(due_detail), set(due_critic)
+    # The two TTLs are 30 and 14 days, so the due lists diverge and their union
+    # can reach twice the cap. Cap the union, popularity-first, and let the
+    # cursor carry the rest to the next run -- that is what it is for.
+    todo = sorted(detail_set | critic_set,
+                  key=lambda cid: rows[cid]["rank"] if cid in rows else CATALOGUE_RANK_BASE
+                  )[:limit]
+    log.info("enriching %d concepts of %d (%d need detail, %d need a critic score)",
+             len(todo), len(rows), len(due_detail), len(due_critic))
 
     def one(cid):
+        """`(detail fetched?, critic matched?)`, either None if not due."""
         row = rows.get(cid)
         if not row:
-            return None
-        try:
-            detail = store.product(row["product"]["id"])
-            stars = store.stars(row["product"]["id"])
-            feats = decode_features(detail.get("compatibilityNotices"))
-            rating = stars.get("starRating") or {}
-            cache.put("product", cid, {
-                "name": detail.get("name") or row["product"].get("name"),
-                # Concept grids do not carry platforms, so for anything found
-                # by the catalogue sweep this is the only source.
-                "platforms": detail.get("platforms") or [],
-                "genres": [g.get("value") for g in
-                           (detail.get("combinedLocalizedGenres") or [])],
-                "esrb": (detail.get("contentRating") or {}).get("name"),
-                "release": detail.get("releaseDate"),
-                "local_players": feats.local_players,
-                "dualsense": feats.dualsense_haptics,
-                "psvr2": feats.psvr2,
-                "star_average": rating.get("averageRating"),
-                "star_count": rating.get("totalRatingsCount"),
-            })
-            cache.mark("product", cid)
-            return True
-        except Exception as exc:
-            log.warning("enrich %s failed: %s", cid, exc)
-            return False
+            return None, None
+        detail_ok = _fetch_detail(store, cache, cid, row) if cid in detail_set else None
+        if detail_ok is False:
+            return False, None
+        critic = _fetch_critic(metacritic, cache, cid, row, args.ttl) \
+            if cid in critic_set else None
+        return detail_ok, critic
 
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        for result in pool.map(one, todo):
-            if result is True:
+    ok = fail = matched = 0
+    # pool.map yields in the main thread, so the counters need no lock.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for detail_ok, critic in pool.map(one, todo):
+            if detail_ok is True:
                 ok += 1
-            elif result is False:
+            elif detail_ok is False:
                 fail += 1
-    return ok, fail
-
-
-def _enrich_critics(metacritic, cache, rows, ttl, critic_ttl, limit):
-    """Metacritic, one request per concept, on its own TTL.
-
-    A miss is stored exactly like a hit. Otherwise every run re-asks about the
-    same few hundred obscure titles that will never have a Metacritic entry.
-    """
-    todo = cache.due("critic", ttl_days=critic_ttl, limit=limit)
-
-    def one(cid):
-        row = rows.get(cid)
-        detail = cache.get("product", cid, ttl_days=ttl) or {}
-        name = detail.get("name") or (row and row["product"].get("name"))
-        if not name:
-            return None
-        try:
-            critic = metacritic.lookup(name, _release_year(detail.get("release")))
-        except Exception as exc:
-            log.warning("metacritic %s failed: %s", cid, exc)
-            return None
-        cache.put("critic", cid, {"score": critic.score, "title": critic.title,
-                                  "url": critic.url} if critic else {})
-        cache.mark("critic", cid)
-        return critic is not None
-
-    matched = 0
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        for result in pool.map(one, todo):
-            if result:
+            if critic:
                 matched += 1
-    return matched, len(todo)
+    return ok, fail, matched, len(due_critic)
+
+
+def _fetch_detail(store, cache, cid, row):
+    """`metGetProductById` plus the star rating. Two operations, not three:
+    `metGetConceptById` returns the same fields minus the concept id."""
+    try:
+        detail = store.product(row["product"]["id"])
+        stars = store.stars(row["product"]["id"])
+        feats = decode_features(detail.get("compatibilityNotices"))
+        rating = stars.get("starRating") or {}
+        cache.put("product", cid, {
+            "name": detail.get("name") or row["product"].get("name"),
+            # Concept grids do not carry platforms, so for anything found
+            # by the catalogue sweep this is the only source.
+            "platforms": detail.get("platforms") or [],
+            "genres": [g.get("value") for g in
+                       (detail.get("combinedLocalizedGenres") or [])],
+            "esrb": (detail.get("contentRating") or {}).get("name"),
+            "release": detail.get("releaseDate"),
+            "local_players": feats.local_players,
+            "dualsense": feats.dualsense_haptics,
+            "psvr2": feats.psvr2,
+            "star_average": rating.get("averageRating"),
+            "star_count": rating.get("totalRatingsCount"),
+        })
+        cache.mark("product", cid)
+        return True
+    except Exception as exc:
+        log.warning("enrich %s failed: %s", cid, exc)
+        return False
+
+
+def _fetch_critic(metacritic, cache, cid, row, ttl):
+    """One Metacritic search. A miss is stored exactly like a hit, or every
+    run re-asks about the same few hundred titles that will never have one."""
+    detail = cache.get("product", cid, ttl_days=ttl) or {}
+    name = detail.get("name") or (row and row["product"].get("name"))
+    if not name:
+        return None
+    try:
+        critic = metacritic.lookup(name, _release_year(detail.get("release")))
+    except Exception as exc:
+        log.warning("metacritic %s failed: %s", cid, exc)
+        return None
+    cache.put("critic", cid, {"score": critic.score, "title": critic.title,
+                              "url": critic.url} if critic else {})
+    cache.mark("critic", cid)
+    return critic is not None
 
 
 def _enrich_playtime(cache, rows, args):
@@ -588,8 +632,17 @@ def main(argv=None):
                    help="playtime cache TTL, days -- it does not change")
     p.add_argument("--igdb-ttl", type=float, default=90,
                    help="IGDB cache TTL, days")
-    p.add_argument("--rate", type=float, default=1.0, help="starting req/s")
-    p.add_argument("--max-rate", type=float, default=6.0, help="ceiling req/s")
+    p.add_argument("--rate", type=float, default=1.0,
+                   help="starting req/s, per host; AIMD ramps up from here")
+    # 6.0 was never a measured wall. Two production runs -- 4,764 and 15,048
+    # requests -- both settled at exactly 6.00 with zero refusals, which says
+    # the store's real threshold is somewhere above it and unknown. The
+    # limiter is built to find that: the first 429/403 halves the rate and
+    # pins the ceiling at 0.9x the refused rate for the rest of the run, so
+    # overshooting costs a handful of refusals rather than an IP. Lower this
+    # if a run ever reports a discovered wall below it.
+    p.add_argument("--max-rate", type=float, default=12.0,
+                   help="ceiling req/s, per host")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:2080")
     p.add_argument("--cache", default="data/cache/ngp.sqlite")
     p.add_argument("--history", default="history",
