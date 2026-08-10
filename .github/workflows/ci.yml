@@ -1,0 +1,64 @@
+name: ci
+
+# Fast feedback on every push. The crawl workflow also runs these, but it
+# takes tens of minutes and hits a third-party API, so it is the wrong place
+# to discover that a dependency is undeclared.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: crawler/requirements-dev.txt
+
+      # A clean env is the point: tenacity was imported but undeclared and
+      # only worked because it happened to be installed on the dev machine.
+      - run: pip install -r crawler/requirements-dev.txt
+      - run: python -m pytest -q
+
+      - name: Every third-party import is declared
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys, tomllib
+          declared = {
+              re.split(r'[><=\[]', line)[0].strip().lower()
+              for line in pathlib.Path('crawler/requirements.txt').read_text().splitlines()
+              if line.strip() and not line.startswith('-')
+          } | {'pytest'}
+          imported = set()
+          for path in pathlib.Path('crawler').rglob('*.py'):
+              for m in re.finditer(r'^\s*(?:import|from)\s+([a-zA-Z_][\w]*)', path.read_text(), re.M):
+                  imported.add(m.group(1).lower())
+          local = {'ngp', 'main'} | {p.stem for p in pathlib.Path('crawler/ngp').glob('*.py')}
+          missing = imported - set(sys.stdlib_module_names) - local - declared
+          if missing:
+              raise SystemExit(f'undeclared dependencies: {sorted(missing)}')
+          print('all third-party imports declared')
+          PY
+
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - working-directory: site
+        run: |
+          npm ci
+          npx vitest run
+          npm run build
