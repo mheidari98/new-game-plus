@@ -8,9 +8,12 @@ catalogue**. This site tells you that first, and only then helps you shop.
 A GitHub Action crawls the US PlayStation Store daily and publishes a static site to GitHub
 Pages. No backend, no accounts, no server costs, ever.
 
+**Live: https://mheidari98.github.io/new-game-plus/**
+
 ## Status
 
-Early. The crawler core is built and tested; the site is not up yet.
+Milestone 1. The crawler runs daily and the site is up. Price history has
+just started accumulating, so anything historical is shallow and says so.
 
 ## What makes it different
 
@@ -48,14 +51,24 @@ cosmetic, and it means you can check the maths. `crawler/ngp/components.py` and
 ## Development
 
 ```bash
-pip install -r crawler/requirements.txt
-pytest                      # 128 tests, no network required
+pip install -r crawler/requirements-dev.txt
+pytest                       # 203 tests, no network required
+
+cd site && npm ci
+npx vitest run               # 15 tests covering the ranking maths
+npm run build
+```
+
+A full crawl, which does hit the live store:
+
+```bash
+python crawler/main.py --once -v
 ```
 
 Behind a restrictive network, route through a proxy:
 
 ```bash
-python -m crawler.main --once --proxy http://127.0.0.1:2080
+python crawler/main.py --once --proxy http://127.0.0.1:2080
 ```
 
 ## Data sources
