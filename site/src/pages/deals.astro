@@ -1,0 +1,164 @@
+---
+import Base from '../layouts/Base.astro';
+const base = import.meta.env.BASE_URL;
+---
+<Base title="Explore every PS5 and PS4 game" tagline="Filter by couch co-op, price, PS+ status and more.">
+  <h1>Explore</h1>
+  <p class="lede">
+    Everything loads once, then filtering happens in your browser. The ranking is computed
+    here from published components — move the sliders and watch it change.
+  </p>
+
+  <div id="app" data-src={`${base}index.json`}>
+    <p class="loading">Loading the catalogue…</p>
+  </div>
+
+  <style>
+    .loading { color: var(--muted); }
+    .controls { display: grid; gap: 0.9rem; margin: 1.5rem 0;
+                background: var(--card); border: 1px solid var(--line);
+                border-radius: 10px; padding: 1rem; }
+    .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
+    .row label { font-size: 0.9rem; display: flex; gap: 0.4rem; align-items: center; }
+    input[type=search] { flex: 1 1 14rem; padding: 0.5rem 0.7rem; font: inherit;
+                         border: 1px solid var(--line); border-radius: 6px;
+                         background: var(--bg); color: var(--fg); }
+    select { padding: 0.4rem; font: inherit; border: 1px solid var(--line);
+             border-radius: 6px; background: var(--bg); color: var(--fg); }
+    .sliders { display: grid; gap: 0.4rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+    .sliders label { font-size: 0.85rem; color: var(--muted); }
+    .sliders input { width: 100%; }
+    .count { color: var(--muted); font-size: 0.9rem; margin: 0.5rem 0 1rem; }
+    ol.results { padding-left: 1.2rem; }
+    ol.results li { margin: 0.55rem 0; }
+    ol.results a { color: inherit; text-decoration: none; font-weight: 600; }
+    ol.results a:hover { color: var(--accent); text-decoration: underline; }
+    .meta { display: block; color: var(--muted); font-size: 0.85rem; }
+    .free { color: var(--free); font-weight: 600; }
+    .tag { border: 1px solid var(--line); border-radius: 999px;
+           padding: 0.05em 0.5em; font-size: 0.78rem; margin-left: 0.35rem; }
+    s { opacity: 0.6; }
+  </style>
+
+  <script>
+    import { decode, price, storeUrl } from '../lib/index';
+    import { finalScore } from '../lib/score';
+
+    const app = document.getElementById('app')!;
+    const YEAR = new Date().getFullYear();
+
+    const state = {
+      q: '', couch: false, hidePlus: false, hasPlus: false,
+      maxPrice: 0, platform: '', genre: '',
+      w: { quality: 0.45, deal: 0.30, value: 0.25 },
+    };
+
+    const res = await fetch(app.dataset.src!);
+    const { meta, rows } = decode(await res.json());
+    // Weights ship inside the payload, so the site cannot drift from the crawler.
+    const weights = meta.weights;
+    state.w = { ...weights.final };
+
+    const genres = [...new Set(rows.flatMap((r) => r.genres))].sort();
+
+    app.innerHTML = `
+      <div class="controls">
+        <div class="row">
+          <input type="search" id="q" placeholder="Search ${rows.length.toLocaleString()} games…" />
+          <select id="platform">
+            <option value="">Any platform</option><option>PS5</option><option>PS4</option>
+          </select>
+          <select id="genre">
+            <option value="">Any genre</option>
+            ${genres.map((g) => `<option>${g}</option>`).join('')}
+          </select>
+          <select id="maxPrice">
+            <option value="0">Any price</option>
+            <option value="1">Free only</option>
+            <option value="1000">Under $10</option>
+            <option value="2000">Under $20</option>
+            <option value="4000">Under $40</option>
+          </select>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="couch" /> Couch co-op (2+ on one console)</label>
+          <label><input type="checkbox" id="hasPlus" /> I have PS+ Extra</label>
+          <label><input type="checkbox" id="hidePlus" /> Hide catalogue games</label>
+        </div>
+        <div class="sliders">
+          <label>Game quality <input type="range" id="w-quality" min="0" max="100" value="45" /></label>
+          <label>Deal depth <input type="range" id="w-deal" min="0" max="100" value="30" /></label>
+          <label>Value per dollar <input type="range" id="w-value" min="0" max="100" value="25" /></label>
+        </div>
+      </div>
+      <p class="count" id="count"></p>
+      <ol class="results" id="results"></ol>`;
+
+    const $ = (id: string) => document.getElementById(id)! as HTMLInputElement;
+    const results = document.getElementById('results')!;
+    const count = document.getElementById('count')!;
+
+    function render() {
+      const q = state.q.toLowerCase();
+      let out = rows.filter((r) => {
+        if (q && !r.name.toLowerCase().includes(q)) return false;
+        if (state.couch && (r.local_players ?? 0) < 2) return false;
+        if (state.hidePlus && r.plus_extra) return false;
+        if (state.platform && !r.platforms.includes(state.platform)) return false;
+        if (state.genre && !r.genres.includes(state.genre)) return false;
+        if (state.maxPrice === 1 && r.price_cents !== 0) return false;
+        if (state.maxPrice > 1 && r.price_cents > state.maxPrice) return false;
+        return true;
+      });
+
+      const total = state.w.quality + state.w.deal + state.w.value || 1;
+      const live = {
+        ...weights,
+        final: {
+          quality: state.w.quality / total,
+          deal: state.w.deal / total,
+          value: state.w.value / total,
+        },
+      };
+      out.sort((a, b) =>
+        finalScore(b, live, { hasPlusExtra: state.hasPlus }, YEAR) -
+        finalScore(a, live, { hasPlusExtra: state.hasPlus }, YEAR));
+
+      count.textContent = `${out.length.toLocaleString()} of ${rows.length.toLocaleString()} games`;
+      results.innerHTML = out.slice(0, 200).map((g) => `
+        <li>
+          <a href="${storeUrl(g.id)}">${g.name}</a>
+          <span class="meta">
+            ${g.price_cents === 0 ? '<span class="free">Free</span>'
+              : `${price(g.price_cents)}${g.discount_pct > 0
+                  ? ` <s>${price(g.base_cents)}</s> −${g.discount_pct}%` : ''}`}
+            ${g.quality > 0 ? ` · quality ${Math.round(g.quality)}` : ''}
+            ${(g.local_players ?? 0) >= 2 ? `<span class="tag">${g.local_players}-player couch</span>` : ''}
+            ${g.plus_extra ? '<span class="tag">PS+ Extra</span>' : ''}
+            ${g.psvr2 ? `<span class="tag">PS VR2 ${g.psvr2}</span>` : ''}
+          </span>
+        </li>`).join('');
+    }
+
+    $('q').addEventListener('input', (e) => { state.q = (e.target as HTMLInputElement).value; render(); });
+    for (const [id, key] of [['platform', 'platform'], ['genre', 'genre']] as const) {
+      document.getElementById(id)!.addEventListener('change', (e) => {
+        (state as any)[key] = (e.target as HTMLSelectElement).value; render();
+      });
+    }
+    document.getElementById('maxPrice')!.addEventListener('change', (e) => {
+      state.maxPrice = Number((e.target as HTMLSelectElement).value); render();
+    });
+    for (const key of ['couch', 'hasPlus', 'hidePlus'] as const) {
+      $(key).addEventListener('change', (e) => {
+        (state as any)[key] = (e.target as HTMLInputElement).checked; render();
+      });
+    }
+    for (const key of ['quality', 'deal', 'value'] as const) {
+      $(`w-${key}`).addEventListener('input', (e) => {
+        state.w[key] = Number((e.target as HTMLInputElement).value) / 100; render();
+      });
+    }
+    render();
+  </script>
+</Base>

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 
 DAY = 86400.0
@@ -44,23 +45,30 @@ CREATE TABLE IF NOT EXISTS payload (
 class Cache:
     def __init__(self, path=":memory:", now=time.time):
         self._now = now
+        # One connection shared across worker threads. sqlite3 serialises
+        # statements but NOT transactions, so concurrent writes raise "cannot
+        # start a transaction within a transaction" and lose rows. Every
+        # method that touches the db takes this lock; new ones must too.
+        self._lock = threading.RLock()
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
         self._db.commit()
 
     def close(self):
-        self._db.close()
+        with self._lock:
+            self._db.close()
 
     def upsert_concepts(self, rows):
         """Re-enumerating the catalogue must not reset progress or duplicate."""
-        self._db.executemany(
-            "INSERT INTO concept (concept_id, rank, product_id) VALUES (?,?,?) "
-            "ON CONFLICT(concept_id) DO UPDATE SET rank=excluded.rank, "
-            "product_id=COALESCE(excluded.product_id, concept.product_id)",
-            [(str(r["concept_id"]), r.get("rank"), r.get("product_id")) for r in rows],
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.executemany(
+                "INSERT INTO concept (concept_id, rank, product_id) VALUES (?,?,?) "
+                "ON CONFLICT(concept_id) DO UPDATE SET rank=excluded.rank, "
+                "product_id=COALESCE(excluded.product_id, concept.product_id)",
+                [(str(r["concept_id"]), r.get("rank"), r.get("product_id")) for r in rows],
+            )
+            self._db.commit()
 
     def due(self, source, ttl_days, limit=None):
         """Concepts with no fresh copy of `source`, most popular first.
@@ -68,38 +76,42 @@ class Cache:
         Popularity is free: the grid's default sort is sales30, so enumeration
         order is already popularity order.
         """
-        sql = (
-            "SELECT c.concept_id FROM concept c "
-            "LEFT JOIN fetched f ON f.concept_id = c.concept_id AND f.source = ? "
-            "WHERE f.at IS NULL OR f.at < ? "
-            "ORDER BY c.rank"
-        )
-        args = [source, self._now() - ttl_days * DAY]
-        if limit:
-            sql += " LIMIT ?"
-            args.append(limit)
-        return [r["concept_id"] for r in self._db.execute(sql, args)]
+        with self._lock:
+            sql = (
+                "SELECT c.concept_id FROM concept c "
+                "LEFT JOIN fetched f ON f.concept_id = c.concept_id AND f.source = ? "
+                "WHERE f.at IS NULL OR f.at < ? "
+                "ORDER BY c.rank"
+            )
+            args = [source, self._now() - ttl_days * DAY]
+            if limit:
+                sql += " LIMIT ?"
+                args.append(limit)
+            return [r["concept_id"] for r in self._db.execute(sql, args)]
 
     def mark(self, source, concept_id):
-        self._db.execute(
-            "INSERT INTO fetched (source, concept_id, at) VALUES (?,?,?) "
-            "ON CONFLICT(source, concept_id) DO UPDATE SET at=excluded.at",
-            (source, str(concept_id), self._now()),
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO fetched (source, concept_id, at) VALUES (?,?,?) "
+                "ON CONFLICT(source, concept_id) DO UPDATE SET at=excluded.at",
+                (source, str(concept_id), self._now()),
+            )
+            self._db.commit()
 
     def put(self, source, key, body):
-        self._db.execute(
-            "INSERT INTO payload (source, key, body, at) VALUES (?,?,?,?) "
-            "ON CONFLICT(source, key) DO UPDATE SET body=excluded.body, at=excluded.at",
-            (source, str(key), json.dumps(body, separators=(",", ":")), self._now()),
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO payload (source, key, body, at) VALUES (?,?,?,?) "
+                "ON CONFLICT(source, key) DO UPDATE SET body=excluded.body, at=excluded.at",
+                (source, str(key), json.dumps(body, separators=(",", ":")), self._now()),
+            )
+            self._db.commit()
 
     def get(self, source, key, ttl_days):
-        row = self._db.execute(
-            "SELECT body, at FROM payload WHERE source=? AND key=?", (source, str(key))
-        ).fetchone()
-        if not row or row["at"] < self._now() - ttl_days * DAY:
-            return None
-        return json.loads(row["body"])
+        with self._lock:
+            row = self._db.execute(
+                "SELECT body, at FROM payload WHERE source=? AND key=?", (source, str(key))
+            ).fetchone()
+            if not row or row["at"] < self._now() - ttl_days * DAY:
+                return None
+            return json.loads(row["body"])

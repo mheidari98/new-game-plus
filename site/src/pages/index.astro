@@ -1,0 +1,100 @@
+---
+import Base from '../layouts/Base.astro';
+import { decode, price, storeUrl } from '../lib/index';
+import raw from '../../public/index.json';
+
+const { meta, rows } = decode(raw);
+const base = import.meta.env.BASE_URL;
+
+const free = rows.filter((r) => r.is_free || r.price_cents === 0)
+  .sort((a, b) => b.quality - a.quality).slice(0, 12);
+const inPlus = rows.filter((r) => r.plus_extra);
+const plusValue = inPlus.reduce((n, r) => n + r.base_cents, 0);
+const deals = rows.filter((r) => !r.plus_extra && !r.is_free && r.discount_pct >= 40)
+  .sort((a, b) => b.quality - a.quality).slice(0, 10);
+const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
+---
+<Base title="new-game-plus — what to play on a new PS5"
+      tagline="You just bought a PS5. You don't have to buy games yet.">
+  <h1>You just bought a PS5.<br />You don't have to buy games yet.</h1>
+  <p class="lede">
+    Before anyone sells you anything: there are free games worth your time, and if you
+    have PlayStation Plus Extra you already own a large library. Here is what that
+    actually looks like today.
+  </p>
+
+  <section>
+    <h2>Free, forever, no subscription</h2>
+    <p class="note">
+      Free-to-play games cost nothing for everyone, permanently. They are not the same as
+      the monthly PS Plus games, which you keep only while you subscribe.
+    </p>
+    <ul class="grid">
+      {free.map((g) => (
+        <li class="card">
+          <a href={storeUrl(g.id)}>{g.name}</a>
+          <span class="meta">
+            <span class="free">Free</span>
+            {g.genres[0] && <> · {g.genres[0]}</>}
+          </span>
+        </li>
+      ))}
+    </ul>
+  </section>
+
+  <section>
+    <h2>If you have PS Plus Extra</h2>
+    <p>
+      <strong>{inPlus.length}</strong> games in this snapshot are in the Extra catalogue —
+      about <strong>${(plusValue / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+      at list price. Do not buy these; you can already play them.
+    </p>
+    <p class="note">
+      This counts only games currently on the store's deals list, so it is a floor, not
+      the whole catalogue.
+    </p>
+  </section>
+
+  <section>
+    <h2>Then, actual deals</h2>
+    <p class="note">
+      Games not in the catalogue, at least 40% off, ranked by how good the game is rather
+      than by discount size.
+    </p>
+    <ol class="rows">
+      {deals.map((g) => (
+        <li>
+          <a href={storeUrl(g.id)}>{g.name}</a>
+          <span class="meta">
+            {price(g.price_cents)} <s>{price(g.base_cents)}</s> · −{g.discount_pct}%
+            {g.quality > 0 && <> · quality {Math.round(g.quality)}</>}
+            {(g.local_players ?? 0) >= 2 && <> · {g.local_players}-player couch</>}
+          </span>
+        </li>
+      ))}
+    </ol>
+    <p><a href={`${base}deals/`}>Filter everything →</a></p>
+  </section>
+
+  <p class="note">
+    {meta.count.toLocaleString()} games in this index · {couch} playable with someone on
+    the same couch · updated {meta.generated_at?.slice(0, 10) ?? 'never'}
+  </p>
+
+  <style>
+    section { margin: 2.5rem 0; }
+    h2 { font-size: 1.3rem; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
+    .note { color: var(--muted); font-size: 0.95rem; }
+    .grid { list-style: none; padding: 0; display: grid; gap: 0.6rem;
+            grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); margin-top: 1rem; }
+    .card { background: var(--card); border: 1px solid var(--line);
+            border-radius: 8px; padding: 0.75rem 0.9rem; }
+    .card a, .rows a { color: inherit; text-decoration: none; font-weight: 600; }
+    .card a:hover, .rows a:hover { color: var(--accent); text-decoration: underline; }
+    .meta { display: block; color: var(--muted); font-size: 0.85rem; margin-top: 0.2rem; }
+    .free { color: var(--free); font-weight: 600; }
+    .rows { padding-left: 1.2rem; }
+    .rows li { margin: 0.5rem 0; }
+    s { opacity: 0.6; }
+  </style>
+</Base>

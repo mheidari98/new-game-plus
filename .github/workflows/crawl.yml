@@ -1,0 +1,135 @@
+name: crawl and publish
+
+# Daily crawl -> build -> Pages. If the crawl looks wrong the run fails and
+# Pages keeps the last good deploy, which is the whole failure policy.
+
+on:
+  schedule:
+    # Off the hour: scheduled workflows are delayed most at :00, and some
+    # queued runs are dropped entirely under load.
+    - cron: "37 6 * * *"
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: "Max enrichments this run"
+        required: false
+        default: "5000"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330        # under the 6h job ceiling
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: crawler/requirements.txt
+
+      - run: pip install -r crawler/requirements.txt
+
+      # Cache entries are immutable, so the key must be unique per run and
+      # restore-keys does the rolling. 10 GB per repo on every plan; we store
+      # the parsed extract (~14 MB), not raw responses (~444 MB).
+      - name: Restore crawl cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/cache
+          key: ngp-cache-${{ github.run_id }}
+          restore-keys: ngp-cache-
+
+      - name: Unit tests
+        run: python -m pytest -q
+
+      - name: Crawl
+        run: |
+          python crawler/main.py --once \
+            --cap '${{ github.event.inputs.cap || 5000 }}' -v
+
+      - name: Save crawl cache
+        if: always()          # a partial cache still saves the next run work
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache
+          key: ngp-cache-${{ github.run_id }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Build site
+        working-directory: site
+        env:
+          PAGES_URL: ${{ steps.pages.outputs.origin || 'https://mheidari98.github.io' }}
+          PAGES_BASE: /new-game-plus
+        run: |
+          npm ci
+          npx vitest run
+          npm run build
+
+      - uses: actions/configure-pages@v5
+        id: pages
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+      - name: Report
+        run: |
+          gz=$(stat -c%s site/public/index.json.gz)
+          echo "### Published" >> $GITHUB_STEP_SUMMARY
+          echo "index.json.gz: $gz bytes ($((gz * 100 / 819200))% of budget)" >> $GITHUB_STEP_SUMMARY
+
+  deploy:
+    needs: crawl
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # A failed crawl must be visible, not silent.
+  raise-issue:
+    needs: crawl
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Stable title so repeats dedupe rather than spam.
+          title="crawl failed: publish blocked"
+          existing=$(gh issue list --repo '${{ github.repository }}' \
+            --state open --search "$title in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo '${{ github.repository }}' \
+              --body "Failed again: $RUN"
+          else
+            gh issue create --repo '${{ github.repository }}' --title "$title" \
+              --body "The crawl did not publish, so the last good deploy is still live.
+
+          Run: $RUN
+
+          Usual causes, in order of likelihood:
+          - catalogue shrank >10% (crawl truncated)
+          - PS+ Extra feed returned empty (it 404s intermittently)
+          - a persisted-query hash went stale -- re-capture from DevTools, never guess"
+          fi

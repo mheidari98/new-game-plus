@@ -1,0 +1,16 @@
+{
+  "name": "new-game-plus-site",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "astro": "^5.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0"
+  }
+}

@@ -1,0 +1,60 @@
+---
+const { title, tagline } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <meta name="description" content={tagline} />
+  <style is:global>
+    :root {
+      --bg: #fbfaf8; --fg: #17161a; --muted: #6b6875;
+      --line: #e5e2dd; --card: #fff; --accent: #2b59d9; --free: #0d7a4f;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme=light]) {
+        --bg: #131217; --fg: #eceaf0; --muted: #9d99a8;
+        --line: #2a2832; --card: #1b1a21; --accent: #8aa4ff; --free: #4ade9b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.25rem; }
+    header { border-bottom: 1px solid var(--line); padding: 1.25rem 0; }
+    header nav { display: flex; gap: 1.25rem; align-items: baseline; flex-wrap: wrap; }
+    header a { color: inherit; text-decoration: none; }
+    .brand { font-weight: 700; letter-spacing: -0.02em; }
+    header nav a:not(.brand) { color: var(--muted); font-size: 0.95rem; }
+    header nav a:not(.brand):hover { color: var(--accent); }
+    h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); line-height: 1.15; letter-spacing: -0.03em; margin: 2rem 0 0.5rem; }
+    .lede { color: var(--muted); font-size: 1.1rem; max-width: 46rem; }
+    footer { border-top: 1px solid var(--line); margin-top: 4rem; padding: 2rem 0; color: var(--muted); font-size: 0.9rem; }
+    footer a { color: var(--accent); }
+    code { background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0.1em 0.35em; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <header><div class="wrap"><nav>
+    <a class="brand" href={base}>new-game-plus</a>
+    <a href={`${base}free/`}>Free games</a>
+    <a href={`${base}deals/`}>Deals</a>
+  </nav></div></header>
+  <main class="wrap"><slot /></main>
+  <footer><div class="wrap">
+    <p>
+      Prices from the US PlayStation Store, refreshed daily. Not affiliated with Sony.
+      <a href="https://github.com/mheidari98/new-game-plus">Source</a>.
+    </p>
+    <p>
+      Price history starts when this project did, so it is shallow.
+      <a href="https://platprices.com">PlatPrices</a> has tracked PSN prices since 2020
+      and shipped a PS+ calculator before this existed.
+    </p>
+  </div></footer>
+</body>
+</html>
