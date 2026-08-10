@@ -1,0 +1,2 @@
+httpx[http2]>=0.25
+rapidfuzz>=3.0

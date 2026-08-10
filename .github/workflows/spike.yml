@@ -1,0 +1,116 @@
+name: spike-reachability
+
+# Milestone 0. Answers the two questions the investigation could not settle
+# from a developer machine:
+#   1. Do the data sources answer an Azure (GitHub-hosted) runner?
+#   2. Does PSN throttle a sustained run from one datacentre IP, and on what
+#      axis -- request count, or wall-clock?
+#
+# Run manually:  gh workflow run spike.yml && gh run watch
+
+on:
+  workflow_dispatch:
+    inputs:
+      canary_requests:
+        description: "Requests for the sustained-rate canary"
+        required: false
+        default: "600"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UA: "new-game-plus/0.1 (+https://github.com/${{ github.repository }})"
+    steps:
+      - name: Egress IP and geo
+        run: |
+          IP=$(curl -s --max-time 15 https://api.ipify.org)
+          echo "egress ip: $IP"
+          curl -s --max-time 15 "https://ipinfo.io/${IP}/json" || true
+
+      # ---- status matrix ------------------------------------------------
+      # Expected from the pre-flight done via a DigitalOcean datacentre IP:
+      #   psn 200, psplus 200, metacritic 200, hltb 200, igdb 401, twitch 404
+      # Anything else on psn/psplus is a project-level problem; anything else
+      # on the rest degrades a column to null and is survivable.
+
+      - name: PSN GraphQL
+        run: |
+          # content-type is mandatory even on GET -- Apollo's CSRF guard
+          # returns a gzipped 400 without it, which reads as binary garbage.
+          curl -s -o /tmp/psn.json -w 'psn %{http_code} in %{time_total}s\n' \
+            --max-time 30 \
+            -H 'content-type: application/json' \
+            -H 'x-psn-store-locale-override: en-US' \
+            -A "$UA" \
+            'https://web.np.playstation.com/api/graphql/v1/op?operationName=categoryGridRetrieve&variables=%7B%22id%22%3A%223f772501-f6f8-49b7-abac-874a88ca4897%22%2C%22pageArgs%22%3A%7B%22size%22%3A1%2C%22offset%22%3A0%7D%2C%22sortBy%22%3Anull%2C%22filterBy%22%3A%5B%5D%2C%22facetOptions%22%3A%5B%5D%7D&extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%224e41660b6732f35c99fc5541926b7502a09557924e8c2cfebd1beb1a5c8c8f81%22%7D%7D'
+          python3 -c "
+          import json,sys
+          d=json.load(open('/tmp/psn.json'))
+          if d.get('errors'): print('GRAPHQL ERRORS:',d['errors']); sys.exit(1)
+          g=d['data']['categoryGridRetrieve']
+          print('totalCount:',g['pageInfo']['totalCount'])
+          print('first item:',g['products'][0]['name'])
+          print('price:',g['products'][0]['price']['basePrice'],'(USD => US catalogue)')
+          "
+
+      - name: PS Plus catalogue feed
+        run: |
+          curl -s -o /tmp/plus.json -w 'psplus %{http_code}\n' --max-time 30 -A "$UA" \
+            'https://www.playstation.com/bin/imagic/gameslist?locale=en-us&categoryList=plus-games-list'
+          python3 -c "
+          import json
+          d=json.load(open('/tmp/plus.json'))
+          n=sum(len(b.get('games',[])) for b in d)
+          print('extra catalogue entries:',n)
+          assert n>0,'empty PS+ catalogue would mark every game as not-in-PS+'
+          "
+
+      - name: Metacritic backend
+        # NB: 403s on the literal UA 'Python-urllib/3.11' and nothing else.
+        run: |
+          curl -s -o /dev/null -w 'metacritic %{http_code}\n' --max-time 30 -A "$UA" \
+            'https://backend.metacritic.com/finder/metacritic/search/celeste/web?apiKey=1MOZgmNFxvmljaQR1X9KAij9Mo4xAY3u&limit=1&mcoTypeId=13&offset=0'
+
+      - name: HowLongToBeat
+        continue-on-error: true
+        run: |
+          curl -s -o /dev/null -w 'hltb %{http_code}\n' --max-time 30 \
+            -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' \
+            https://howlongtobeat.com/
+
+      - name: IGDB and Twitch
+        continue-on-error: true
+        run: |
+          curl -s -o /dev/null -w 'igdb %{http_code} (401 = reachable)\n'  --max-time 30 https://api.igdb.com/v4/games
+          curl -s -o /dev/null -w 'twitch %{http_code} (404 on GET = reachable)\n' --max-time 30 https://id.twitch.tv/oauth2/token
+
+      # ---- the part that actually matters -------------------------------
+      - name: Sustained-rate canary at the production pace
+        run: |
+          N='${{ github.event.inputs.canary_requests || 600 }}'
+          fail=0; first_fail=''
+          start=$SECONDS
+          for i in $(seq 1 "$N"); do
+            c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+              -H 'content-type: application/json' \
+              -H 'x-psn-store-locale-override: en-US' \
+              -A "$UA" \
+              "https://web.np.playstation.com/api/graphql/v1/op?operationName=categoryGridRetrieve&variables=%7B%22id%22%3A%223f772501-f6f8-49b7-abac-874a88ca4897%22%2C%22pageArgs%22%3A%7B%22size%22%3A1%2C%22offset%22%3A$i%7D%2C%22sortBy%22%3Anull%2C%22filterBy%22%3A%5B%5D%2C%22facetOptions%22%3A%5B%5D%7D&extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%224e41660b6732f35c99fc5541926b7502a09557924e8c2cfebd1beb1a5c8c8f81%22%7D%7D")
+            if [ "$c" != "200" ]; then
+              fail=$((fail+1))
+              [ -z "$first_fail" ] && first_fail="request #$i at t=$((SECONDS-start))s -> HTTP $c"
+              echo "  FAIL $first_fail"
+            fi
+            sleep 1
+          done
+          echo "----"
+          echo "non-200: $fail / $N over $((SECONDS-start))s"
+          # Failures clustered at a request COUNT indicate a quota; failures at
+          # a wall-clock TIME indicate a window. They need different fixes.
+          [ -n "$first_fail" ] && echo "first failure: $first_fail"
+          [ "$fail" -eq 0 ] || exit 1

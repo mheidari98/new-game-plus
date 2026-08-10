@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+node_modules/
+site/dist/
+site/.astro/
+data/cache/
+out/
+
+# Internal planning doc - deliberately not published
+docs/plan.md
