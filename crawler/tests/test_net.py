@@ -244,24 +244,30 @@ class TestWorkerSizing:
     without the other is the easy mistake."""
 
     def test_matches_the_ceiling_at_the_measured_latency(self):
-        assert workers_for(6.0) == 5      # 6 x 0.8 = 4.8
-        assert workers_for(12.0) == 10
+        assert workers_for(6.0) == 8       # 6 x 1.33
+        assert workers_for(12.0) == 16
 
     def test_widens_when_a_task_also_waits_on_another_host(self):
         # 2 store requests + 1 Metacritic. A worker blocked on Metacritic is
         # not fetching from the store, so the pool has to be wider than the
         # store's rate alone suggests.
-        assert workers_for(6.0, task_requests=3, host_requests=2) == 8
-        assert workers_for(12.0, task_requests=3, host_requests=2) == 15
+        assert workers_for(6.0, task_requests=3, host_requests=2) == 12
+        assert workers_for(12.0, task_requests=3, host_requests=2) == 24
 
     def test_one_request_per_task_is_just_ceiling_times_latency(self):
         assert workers_for(6.0, task_requests=1, host_requests=1) == workers_for(6.0)
 
+    def test_is_sized_from_concurrent_latency_not_single_threaded(self):
+        # Sizing from the 0.8 s single-threaded figure left the store running
+        # at 7.5 req/s against a 12.00 ceiling. Under 15-way concurrency on
+        # one HTTP/2 connection a request occupies its worker for 1.33 s.
+        assert workers_for(12.0, task_requests=3, host_requests=2) > 15
+
     def test_never_drops_below_one(self):
         assert workers_for(0.25) == 1
 
-    def test_is_capped_so_a_typo_cannot_open_a_hundred_threads(self):
-        assert workers_for(1000.0) == 16
+    def test_is_capped_so_a_typo_cannot_open_hundreds_of_threads(self):
+        assert workers_for(1000.0) == 32
 
 
 class TestStatsUnderConcurrency:

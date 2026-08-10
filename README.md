@@ -95,7 +95,8 @@ Three things were wrong with that, and none of them was the request count:
    limiter, so it now runs in a thread beside the store passes and its 8 minutes vanish inside
    theirs.
 
-Measured after: **55.6 min → 18.4 min**, and effective throughput 4.5 → 9.3 requests/second.
+Measured after, on the enrichment phase alone so the comparison is like for like:
+**4.77 → 11.28 requests/second, 2.4×**. Whole-run wall clock went 55.6 → 15.5 min.
 
 The ceiling was raised from 6 to **12 req/s per host** on evidence rather than optimism: two
 production runs totalling ~20,000 requests both settled at exactly 6.00 with **zero refusals**,
@@ -108,8 +109,18 @@ an IP. Every run prints the rate each host settled at, and the wall if it found 
 ever reports a wall below 12, lower `--max-rate` to it.
 
 Worker count is derived, never a literal — `net.workers_for(ceiling, task_requests,
-host_requests)`. Raising the ceiling without widening the pool buys nothing, because a thread
-spends ~0.8 s per request on the wire.
+host_requests)`. Raising the ceiling without widening the pool buys nothing.
+
+That is not a hypothetical: the first run at the new ceiling had the store at **7.5 req/s against
+its own 12.00 ceiling**, because the pool was sized from a per-request latency of 0.8 s measured
+*single-threaded*. Under fifteen-way concurrency on one HTTP/2 connection a request occupies its
+worker for **1.33 s** — measured as 8,211 requests through 15 workers in 728 s — so the pool was
+38% too small. `MEASURED_LATENCY_S` now carries the concurrent figure.
+
+Widening the pool cannot make the crawl less polite, which is what makes this safe to tune: the
+limiter caps the rate per host regardless of how many threads are queued on it. Workers only
+decide whether we reach the rate we already chose. `MAX_WORKERS` is a guard against a typo in
+`--max-rate`, not a politeness limit.
 
 ## Design constraints
 

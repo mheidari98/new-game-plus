@@ -34,9 +34,19 @@ RETRY_STATUSES = (408, 429, 403, 500, 502, 503, 504)
 # other module -- tests included -- importing an HTTP library.
 TransportFailure = httpx.TransportError
 
-# Measured per-request round trip against the store.
-MEASURED_LATENCY_S = 0.8
-MAX_WORKERS = 16
+# Measured per-request wall time *per worker*, from a production run: 8,211
+# requests through 15 workers in 728 s. Notably not the 0.8 s measured
+# single-threaded -- 15 threads multiplexing over one HTTP/2 connection queue
+# behind each other, so a request occupies its worker for longer than it takes
+# the host to answer. Sizing the pool from the single-threaded figure left the
+# store running at 7.5 req/s against a 12.00 ceiling.
+MEASURED_LATENCY_S = 1.33
+
+# A guard against a typo in --max-rate opening hundreds of threads, not a
+# politeness limit. Workers cannot make the crawl less polite: the limiter
+# caps the rate per host no matter how many threads are waiting on it, so a
+# wider pool only stops us undershooting the rate we already chose.
+MAX_WORKERS = 32
 
 
 def workers_for(ceiling: float, task_requests: int = 1, host_requests: int = 1) -> int:
