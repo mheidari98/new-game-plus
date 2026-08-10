@@ -28,6 +28,12 @@ jobs:
       - run: pip install -r crawler/requirements-dev.txt
       - run: python -m pytest -q
 
+      # Rules that documentation cannot enforce: rate-limiter bypass, scoring
+      # purity, duplicated weights, unguarded fuzzy matching, unlocked SQLite,
+      # generated query hashes, private npm registry.
+      - name: Invariants
+        run: python scripts/check_invariants.py
+
       - name: Every third-party import is declared
         run: |
           python - <<'PY'
