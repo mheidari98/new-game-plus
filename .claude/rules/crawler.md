@@ -24,6 +24,14 @@ unstamped and the next one continues. Do not add a separate cursor — a new sou
 Cache a *miss* exactly like a hit. Otherwise every run re-asks Metacritic and HowLongToBeat
 about the same few hundred titles that will never have an entry.
 
+When a source starts capturing a new field, the rows already cached lack it. Refresh that one
+source — `--refresh product`, or the `refresh` input on the crawl workflow — which clears its
+freshness stamps and leaves the payloads and every other source alone. Do **not** reach for the
+other two options: `--ttl 0` also expires the payload `_assemble` reads back, so every game
+publishes with no genres, no rating and quality 0 and the publish gate does not catch it; and
+busting the Actions cache key discards playtime too, which is capped at 400 lookups a run and
+takes weeks to warm.
+
 A transport failure is not a refusal. The host never answered, so it says nothing about our
 pace: `net.py` retries it like a 502 and leaves the limiter alone.
 

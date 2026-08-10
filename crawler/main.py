@@ -80,6 +80,9 @@ def crawl(args):
     state_dir = (REPO / args.cache).parent
     state_dir.mkdir(parents=True, exist_ok=True)
     cache = Cache(REPO / args.cache)
+    if args.refresh:
+        log.info("refresh: %d %s stamps cleared, so every concept is due again",
+                 cache.clear_stamps(args.refresh), args.refresh)
     last_good = state_dir / "last_good.json"
     try:
         previous = json.loads(last_good.read_text())["game_count"]
@@ -622,6 +625,12 @@ def main(argv=None):
     # if a run ever reports a discovered wall below it.
     p.add_argument("--max-rate", type=float, default=12.0,
                    help="ceiling req/s, per host")
+    # --ttl 0 looks like it would do this and must not be used for it: it also
+    # expires the payload `_assemble` reads back, so every game publishes with
+    # no genres, no rating and quality 0, and the publish gate passes.
+    p.add_argument("--refresh", metavar="SOURCE",
+                   help="re-fetch one source (product, critic, playtime, igdb) "
+                        "whatever its TTL, for when it starts capturing a new field")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:2080")
     p.add_argument("--cache", default=CACHE_DB)
     p.add_argument("--history", default="history",

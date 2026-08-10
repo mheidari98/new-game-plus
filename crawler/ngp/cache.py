@@ -89,6 +89,21 @@ class Cache:
                 args.append(limit)
             return [r["concept_id"] for r in self._db.execute(sql, args)]
 
+    def clear_stamps(self, source):
+        """Make every concept due for one source again. Returns rows cleared.
+
+        For when a source starts capturing a field it did not before: the
+        payloads stay, so `get` still answers during the same run and the other
+        sources keep their own TTLs -- playtime is capped at 400 lookups a run
+        and takes weeks to warm, so throwing the whole cache away to refresh
+        one source costs far more than it fixes.
+        """
+        with self._lock:
+            cleared = self._db.execute(
+                "DELETE FROM fetched WHERE source=?", (source,)).rowcount
+            self._db.commit()
+            return cleared
+
     def mark(self, source, concept_id):
         with self._lock:
             self._db.execute(

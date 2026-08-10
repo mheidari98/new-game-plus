@@ -19,6 +19,12 @@ on:
         type: boolean
         required: false
         default: true
+      # Cheaper and safer than busting the cache key: that would also discard
+      # playtime, which is capped at 400 lookups a run and takes weeks to warm.
+      refresh:
+        description: "Re-fetch one source whatever its TTL, e.g. product (leave empty normally)"
+        required: false
+        default: ""
 
 permissions:
   # write, because the price history is committed to the `data` branch. It is
@@ -80,6 +86,7 @@ jobs:
         run: |
           python crawler/main.py \
             ${{ github.event.inputs.backfill == 'false' && ' ' || '--backfill' }} \
+            ${{ github.event.inputs.refresh && format('--refresh {0}', github.event.inputs.refresh) || ' ' }} \
             --cap '${{ github.event.inputs.cap || 5000 }}' -v
 
       # Before the site build: if the crawl produced nothing publishable the

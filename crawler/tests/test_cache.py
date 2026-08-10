@@ -165,3 +165,46 @@ class TestPersistence:
         second = Cache(path, now=clock)
         assert second.due("product", ttl_days=30) == ["C1", "C2"]
         assert second.get("product", "C0", ttl_days=30) == {"n": 1}
+
+
+class TestRefreshingOneSource:
+    """Adding a field to a source means the rows already cached lack it.
+
+    The whole cache cannot just be thrown away to fix that: playtime is capped
+    at 400 lookups a run on a deliberately slow limiter and takes weeks to
+    warm. Clearing one source's stamps re-fetches only that source.
+    """
+
+    def seeded(self):
+        cache = Cache()
+        cache.upsert_concepts([{"concept_id": "1", "rank": 0, "product_id": "p1"},
+                               {"concept_id": "2", "rank": 1, "product_id": "p2"}])
+        for cid in ("1", "2"):
+            for source in ("product", "playtime"):
+                cache.put(source, cid, {"name": f"{source} {cid}"})
+                cache.mark(source, cid)
+        return cache
+
+    def test_every_concept_is_due_again(self):
+        cache = self.seeded()
+        assert cache.due("product", ttl_days=30) == []
+        assert cache.clear_stamps("product") == 2
+        assert cache.due("product", ttl_days=30) == ["1", "2"]
+
+    def test_other_sources_keep_their_ttl(self):
+        # The reason this exists rather than dropping the cache directory.
+        cache = self.seeded()
+        cache.clear_stamps("product")
+        assert cache.due("playtime", ttl_days=180) == []
+
+    def test_payloads_survive_so_assembly_still_reads_them(self):
+        # --ttl 0 is the trap this avoids: it expires the payload too, and
+        # every game then publishes with no genres and quality 0.
+        cache = self.seeded()
+        cache.clear_stamps("product")
+        assert cache.get("product", "1", ttl_days=30) == {"name": "product 1"}
+
+    def test_an_unknown_source_clears_nothing(self):
+        cache = self.seeded()
+        assert cache.clear_stamps("nope") == 0
+        assert cache.due("product", ttl_days=30) == []
