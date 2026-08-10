@@ -29,7 +29,7 @@ delete the test.
 The suites need no network. Anything that needs the live store belongs in a manual run:
 
 ```bash
-python crawler/main.py --once --limit 25 -v
+python crawler/main.py --limit 25 -v
 ```
 
 ## Pull requests

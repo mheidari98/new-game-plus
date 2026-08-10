@@ -11,7 +11,7 @@ import json
 import pytest
 
 from ngp.components import Weights
-from ngp.publish import GZIP_BUDGET_BYTES, build_index, write_index
+from ngp.publish import GZIP_BUDGET_BYTES, build_index, render, save, save_art
 
 
 def row(i=0, **over):
@@ -31,7 +31,6 @@ def row(i=0, **over):
         psvr2=None,
         dualsense=True,
         release_year=2023,
-        tier="premium",
         quality=78.5,
         discount_depth=72.1,
         price_anchor=61.0,
@@ -72,6 +71,11 @@ class TestLayout:
         idx = build_index([row(0), row(1, esrb="ESRB_MATURE")], weights)
         assert set(idx["dicts"]["esrb"]) == {"ESRB_TEEN", "ESRB_MATURE"}
 
+    def test_tier_is_not_published(self, weights):
+        # Nothing reads it: the browser buckets by base price itself.
+        idx = build_index([row(0, tier="premium")], weights)
+        assert "tier" not in idx["cols"] and "tier" not in idx["dicts"]
+
 
 class TestAntiDrift:
     """Weights live in one file, copied into the payload. The browser reads
@@ -111,31 +115,71 @@ class TestMetadata:
 
 
 class TestBudget:
-    def test_twelve_thousand_games_fit_the_gzip_budget(self, weights, tmp_path):
+    """render() reports the real sizes so the caller's guard can refuse before
+    save() puts anything on disk."""
+
+    def test_twelve_thousand_games_fit_the_gzip_budget(self, weights):
         games = [row(i, name=f"Some Game With A Realistic Length Title {i}")
                  for i in range(12_000)]
-        out = tmp_path / "index.json"
-        stats = write_index(games, weights, out)
+        _, _, stats = render(games, weights)
         assert stats["gzip_bytes"] < GZIP_BUDGET_BYTES, (
             f"{stats['gzip_bytes']} exceeds the {GZIP_BUDGET_BYTES} budget"
         )
 
-    def test_write_reports_both_sizes(self, weights, tmp_path):
-        out = tmp_path / "index.json"
-        stats = write_index([row(i) for i in range(50)], weights, out)
+    def test_render_reports_both_sizes(self, weights):
+        _, _, stats = render([row(i) for i in range(50)], weights)
         assert stats["raw_bytes"] > stats["gzip_bytes"] > 0
 
     def test_output_is_valid_json_and_reloadable(self, weights, tmp_path):
         out = tmp_path / "index.json"
-        write_index([row(0), row(1)], weights, out)
+        body, packed, _ = render([row(0), row(1)], weights)
+        save(out, body, packed)
         loaded = json.loads(out.read_text())
         assert loaded["meta"]["count"] == 2
 
     def test_gzip_sidecar_is_written_for_precompression(self, weights, tmp_path):
-        # Pages serves gzip but not brotli, and precompressing at build time
-        # is free.
+        # Pages serves gzip but not brotli, and precompressing is free here.
         out = tmp_path / "index.json"
-        write_index([row(0)], weights, out)
+        save(out, *render([row(0)], weights)[:2])
         gz = out.with_suffix(".json.gz")
         assert gz.exists()
         assert json.loads(gzip.decompress(gz.read_bytes()))["meta"]["count"] == 1
+
+
+class TestCoverArt:
+    """Art is fetched and stored but deliberately kept out of index.json.
+
+    Measured on the live payload: a URL adds 34.6 B gzipped per row that gzip
+    cannot shrink -- the 48-hex asset hash is random -- so at the 12,736-game
+    catalogue it is 428 KB and pushes the index past the budget. It goes to a
+    build-only file instead, and the static pages bake in the <img>.
+    """
+
+    ART = "https://image.api.playstation.com/vulcan/ap/rnd/202306/1219/abc.png"
+
+    def test_art_is_not_a_published_column(self, weights):
+        index = build_index([row(0, art=self.ART)], weights)
+        assert "art" not in index["cols"]
+        assert "art" not in index["dicts"]
+
+    def test_art_url_does_not_reach_the_payload_at_all(self, weights):
+        body, _, _ = render([row(0, art=self.ART)], weights)
+        assert b"image.api.playstation.com" not in body
+
+    def test_save_art_keys_urls_by_product_id(self, tmp_path):
+        out = tmp_path / "art.json"
+        games = [row(0, art=self.ART), row(1, art=self.ART)]
+        assert save_art(out, games) == 2
+        assert json.loads(out.read_text())[games[0]["id"]] == self.ART
+
+    def test_games_without_art_are_absent_rather_than_null(self, tmp_path):
+        # A missing key is what lets the page render no image at all; a null
+        # would still have to be checked and costs bytes in the build input.
+        out = tmp_path / "art.json"
+        assert save_art(out, [row(0, art=None), row(1, art=self.ART)]) == 1
+        assert list(json.loads(out.read_text())) == [row(1)["id"]]
+
+    def test_save_art_creates_its_directory(self, tmp_path):
+        out = tmp_path / "nested" / "art.json"
+        save_art(out, [row(0, art=self.ART)])
+        assert out.exists()

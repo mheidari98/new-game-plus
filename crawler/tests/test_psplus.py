@@ -139,6 +139,20 @@ class TestTransientFailure:
         assert len(got["extra"]) == 2
         assert got["classics"] == []
 
+    def test_a_missing_optional_list_is_logged(self, caplog):
+        # Silently empty Classics publishes every game as not-in-Classics,
+        # which is a confident wrong answer. A moved URL must be visible.
+        class PartialHttp:
+            def get_json(self, url, headers=None):
+                if "plus-games-list" in url:
+                    return feed(entry(1))
+                raise RuntimeError("HTTP 404")
+        with caplog.at_level("WARNING", logger="ngp.psplus"):
+            fetch_all(PartialHttp(), sleep=lambda _: None)
+        logged = caplog.text
+        assert "classics" in logged and "monthly" in logged
+        assert "HTTP 404" in logged
+
     def test_extra_is_asked_again_before_the_run_is_abandoned(self):
         # A 404 here costs the whole crawl, and the feed has answered on the
         # next try. net.py cannot do this: a 404 elsewhere is a real absence.
@@ -203,3 +217,32 @@ class TestTierFlags:
         # Essential monthlies are claimable and keepable by every tier.
         idx = PlusIndex({"monthly": parse_feed(feed(entry(1)), "monthly")})
         assert idx.lookup(concept_id="1").in_extra is True
+
+
+class TestExtraCount:
+    """The publish gate needs the size of the Extra catalogue. It counts
+    concepts, not entries -- 18 conceptIds cover 38 Extra entries."""
+
+    def test_counts_concepts_in_extra(self):
+        idx = PlusIndex({"extra": parse_feed(feed(entry(1), entry(2)), "extra")})
+        assert idx.extra_count == 2
+
+    def test_classics_only_concepts_are_not_counted(self):
+        idx = PlusIndex({
+            "extra": parse_feed(feed(entry(1)), "extra"),
+            "classics": parse_feed(feed(entry(2)), "classics"),
+        })
+        assert idx.extra_count == 1
+        assert len(idx) == 2
+
+    def test_duplicate_concept_ids_count_once(self):
+        idx = PlusIndex({"extra": parse_feed(
+            feed(entry(10, "TimeSplitters 1"), entry(10, "TimeSplitters 2")), "extra")})
+        assert idx.extra_count == 1
+
+    def test_monthly_counts_as_extra(self):
+        idx = PlusIndex({"monthly": parse_feed(feed(entry(1)), "monthly")})
+        assert idx.extra_count == 1
+
+    def test_empty_catalogue_is_zero(self):
+        assert PlusIndex({"extra": []}).extra_count == 0

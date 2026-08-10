@@ -17,6 +17,13 @@ is 1.67 MB gzipped and blows the budget. `src/lib/index.ts` decodes it. Cover ar
 absent: it was 27% of the payload, and stripping the URL prefix saves only 0.3% because the asset
 hash is irreducible.
 
+Art lives in `src/art.json` instead — outside `public/`, so it is build input and never served.
+Pages that render at build time (`/`, `/free/`, the prerendered `/game/<id>/`) import it and emit
+`<img>` directly, costing the client nothing. The runtime islands have no art: `/plus/` and the
+long-tail `/game/?id=` would need the whole 428 KB file to show a handful of thumbnails, so they
+show none. `artUrl(url, width)` is mandatory — the raw asset is 403,800 B and `?w=200` is 12,679 B.
+Every `<img>` carries `width`/`height` so the box is reserved and nothing shifts.
+
 Three plain `<script>` islands — `/deals/`, `/plus/` and `/game/` — and no framework runtime.
 Adding one would undo the reason the site loads instantly.
 

@@ -114,6 +114,17 @@ class TestDisambiguation:
         ))
         assert Metacritic(http).lookup("Silent Hill 2", release_year=2001).score == 89
 
+    def test_a_missing_year_does_not_break_the_tie_break(self):
+        # Two entries that tie on title, confidence and platform. Ranking used
+        # to fall through to the year, which is None when an entry has neither
+        # a premiereYear nor a "(YYYY)" suffix, and raised TypeError against
+        # the other's int. Metacritic's own ordering breaks the tie.
+        http = FakeHttp(results(
+            item("Silent Hill 2", 2001, 89, slug="silent-hill-2-og"),
+            item("Silent Hill 2", None, 86),
+        ))
+        assert Metacritic(http).lookup("Silent Hill 2").score == 89
+
     def test_ignores_non_game_result_types(self):
         film = dict(item("Gang Beasts", 2017, 99), typeId=3)
         http = FakeHttp(results(film, item("Gang Beasts", 2017, 68)))

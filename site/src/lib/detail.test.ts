@@ -17,7 +17,6 @@ const game = (over: Partial<Row> = {}): Row => ({
   local_players: null,
   psvr2: null,
   dualsense: false,
-  tier: 'premium',
   release_year: 2024,
   critic_score: null,
   hours_main: null,
@@ -62,6 +61,19 @@ describe('detailHtml', () => {
     expect(html).toContain('no usable price history yet');
   });
 
+  it('says so for a row built without the history fields at all', () => {
+    // The Game interface types these as optional; only decode() coalesces them
+    // to null, so an === null check renders "NaN / 100" here.
+    const html = detailHtml(game({ vs_historical_min: undefined, vs_typical_sale: undefined }), 2026);
+    expect(html).not.toContain('NaN');
+    expect(html).toContain('no usable price history yet');
+  });
+
+  it('spells the ESRB rating the same way the listing pages do', () => {
+    expect(detailHtml(game({ esrb: 'ESRB_MATURE_17' }), 2026)).toContain('Mature 17+');
+    expect(detailHtml(game({ esrb: 'ESRB_MATURE_17' }), 2026)).not.toContain('ESRB_');
+  });
+
   it('shows the history comparison once it exists', () => {
     const html = detailHtml(game({ vs_historical_min: 100 }), 2026);
     expect(html).toContain('100 / 100');
@@ -93,5 +105,28 @@ describe('detailHtml', () => {
 
   it('is pure - same inputs give the same output', () => {
     expect(detailHtml(game(), 2026)).toBe(detailHtml(game(), 2026));
+  });
+});
+
+describe('cover art on the game page', () => {
+  const ART =
+    'https://image.api.playstation.com/vulcan/ap/rnd/202306/1219/1c7b75d8.png';
+
+  it('renders a sized image when the build supplies one', () => {
+    const html = detailHtml(game(), 2026, ART);
+    expect(html).toContain(`src="${ART}?w=440"`);
+    // width/height reserve the box so the text below does not jump.
+    expect(html).toMatch(/width="440"\s+height="440"/);
+  });
+
+  it('renders no image at all when art is absent', () => {
+    // The long-tail page has no art.json, so this is its normal state.
+    expect(detailHtml(game(), 2026, null)).not.toContain('<img');
+    expect(detailHtml(game(), 2026)).not.toContain('<img');
+  });
+
+  it('escapes the art URL like every other interpolated value', () => {
+    const html = detailHtml(game(), 2026, 'https://img/x.png?a=1&b=2');
+    expect(html).toContain('&amp;b=2');
   });
 });

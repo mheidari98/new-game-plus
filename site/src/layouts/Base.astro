@@ -37,9 +37,41 @@ const base = import.meta.env.BASE_URL;
     footer a { color: var(--accent); }
     code { background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0.1em 0.35em; font-size: 0.9em; }
 
+    /* Shared list and badge styles. Global, not per page: an island builds its
+       markup at runtime, and Astro's scoped styles only reach elements it
+       rendered itself. Pages override where they deliberately differ. */
+    .note { color: var(--muted); font-size: 0.95rem; }
+    .loading { color: var(--muted); }
+    .free { color: var(--free); font-weight: 600; }
+    .meta { display: block; color: var(--muted); font-size: 0.85rem; }
+    .rows { padding-left: 1.2rem; }
+    .rows li { margin: 0.55rem 0; }
+    .rows a { color: inherit; text-decoration: none; font-weight: 600; }
+    .rows a:hover { color: var(--accent); text-decoration: underline; }
+    .tag { border: 1px solid var(--line); border-radius: 999px;
+           padding: 0.05em 0.5em; font-size: 0.78rem; margin-left: 0.35rem; }
+    .tag.in, .tag.low { border-color: var(--free); color: var(--free); }
+    s { opacity: 0.6; }
+
     /* One game's page. Shared here rather than in either page, because the
        markup is rendered twice: prerendered for the popular games, in the
        browser for the tail. */
+    /* Cover art. Every <img> carries width/height so the box is reserved
+       before the image lands and nothing shifts. Sizes are requested from the
+       CDN, not scaled down here -- a 400 KB asset shrunk in CSS is still
+       400 KB over the wire. */
+    .cardart { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px;
+               display: block; margin-bottom: 0.5rem; background: var(--line); }
+    .withart { display: flex; gap: 0.7rem; align-items: center; }
+    .thumb { width: 56px; height: 56px; flex: none; border-radius: 5px;
+             object-fit: cover; background: var(--line); }
+    .gamepage .cover { float: right; width: 220px; max-width: 38%; height: auto;
+                       aspect-ratio: 1; object-fit: cover; border-radius: 8px;
+                       margin: 0 0 1rem 1.25rem; background: var(--line); }
+    @media (max-width: 34rem) {
+      .gamepage .cover { float: none; width: 160px; max-width: 50%; margin: 0 0 1rem; }
+    }
+
     .gamepage h2 { font-size: 1.15rem; letter-spacing: -0.02em; margin: 2rem 0 0.5rem; }
     .gamepage .price { font-size: 1.2rem; margin: 0.5rem 0 1.5rem; }
     .gamepage .price s { opacity: 0.6; font-size: 0.9rem; }

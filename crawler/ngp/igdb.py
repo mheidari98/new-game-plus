@@ -1,37 +1,26 @@
-"""IGDB: split-screen and player perspective. Optional, and null-degrading.
+"""IGDB: split-screen and player perspective, the one signal with no keyless
+substitute. Optional and null-degrading: without `IGDB_CLIENT_ID` /
+`IGDB_CLIENT_SECRET` the columns stay null, and nothing here can fail a run.
+The `client_credentials` grant is app-only, so IGDB never sees an account.
 
-Needs `IGDB_CLIENT_ID` and `IGDB_CLIENT_SECRET`. Those identify an
-*application*, not a person -- the `client_credentials` grant carries no user
-context, so IGDB never sees an account, a library or any personal data. It is
-free. A forker without one gets null columns and a logged warning; nothing in
-this file can fail a run.
+Two things are resolved at runtime because the documentation does not answer
+them:
 
-Perspective is the one signal with no keyless substitute. Everything else the
-site leads with comes from Sony's own `NO_OF_PLAYERS`, which is why the couch
-co-op filter shipped without this.
+* `external_game.category = 36` is formally deprecated in favour of
+  `external_game_source`, so the live source id is read from
+  `/v4/external_game_sources` rather than pinned.
+* `uid` is documented only as "The other services ID for this game", and the
+  three candidates are mutually incompatible: a concept id (`10002456`), a
+  product id (`UP9000-PPSA03016_00-MARVELSPIDERMAN2`) or an npTitleId
+  (`PPSA03016_00`). A sample is classified by shape and the join key follows.
 
-Two things are resolved at runtime rather than pinned, because the
-documentation does not answer them:
-
-* **The PlayStation Store source id.** `external_game.category = 36` is
-  formally deprecated in favour of `external_game_source`, so the live id is
-  read from `/v4/external_game_sources` instead of hardcoded.
-* **What `uid` holds.** IGDB documents it only as "The other services ID for
-  this game", and the three candidates are mutually incompatible: a bare
-  concept id (`10002456`), a full product id
-  (`UP9000-PPSA03016_00-MARVELSPIDERMAN2`), or an npTitleId (`PPSA03016_00`).
-  Rather than guess, a sample of real uids is classified by shape and the
-  join key follows from what comes back.
-
-**Not yet exercised against the live API.** No Twitch credential existed on
-the machine this was written on; `api.igdb.com` answers 401, which proves
-reachability and nothing else. The request shapes are documentation-derived.
-Everything degrades to null, so the first live run is the real test.
+**Never exercised against the live API** -- no Twitch credential existed on the
+machine this was written on, so the request shapes are documentation-derived
+and the first live run is the real test.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -43,7 +32,6 @@ log = logging.getLogger(__name__)
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 API = "https://api.igdb.com/v4"
 
-PS4, PS5 = 48, 167
 PAGE = 500                      # IGDB's hard per-query limit
 
 # The three things `uid` could be, told apart by shape. Order matters: an
@@ -98,19 +86,24 @@ class Igdb:
 
     def query(self, endpoint: str, apicalypse: str):
         """One apicalypse query. Returns [] on any failure -- optional means
-        optional."""
-        if not self._authorise():
-            return []
+        optional. Use `_query` where an empty answer and a failed one mean
+        different things."""
         try:
-            return self._http.request(
-                "POST", f"{API}/{endpoint}",
-                headers={"Client-ID": self._id,
-                         "Authorization": f"Bearer {self._token}",
-                         "accept": "application/json"},
-                body=apicalypse.encode()).json() or []
+            return self._query(endpoint, apicalypse)
         except Exception as exc:
             log.warning("igdb %s failed: %s", endpoint, exc)
             return []
+
+    def _query(self, endpoint: str, apicalypse: str):
+        """As `query`, but raises rather than flattening a failure to []."""
+        if not self._authorise():
+            raise RuntimeError("no token")
+        return self._http.request(
+            "POST", f"{API}/{endpoint}",
+            headers={"Client-ID": self._id,
+                     "Authorization": f"Bearer {self._token}",
+                     "accept": "application/json"},
+            body=apicalypse.encode()).json() or []
 
     # -- the join key -------------------------------------------------------
 
@@ -129,12 +122,23 @@ class Igdb:
         The shape is what tells the caller which of our three identifiers to
         join on. If the uids are none of the three, it returns None and the
         caller falls back to name matching.
+
+        A failure part way through the ~26 pages throws the whole index away
+        rather than returning a truncated one: the caller cannot tell a short
+        index from a small catalogue, and would cache the missing half as a
+        confident "no split-screen" for 90 days.
         """
         index, offset = {}, 0
         while True:
-            rows = self.query("external_games", (
-                f"fields game,uid; where external_game_source = {source}; "
-                f"limit {PAGE}; offset {offset};"))
+            try:
+                rows = self._query("external_games", (
+                    f"fields game,uid; where external_game_source = {source}; "
+                    f"limit {PAGE}; offset {offset};"))
+            except Exception as exc:
+                log.warning("igdb: external_games failed at offset %d, "
+                            "dropping a partial index of %d links: %s",
+                            offset, len(index), exc)
+                return {}, None
             if not rows:
                 break
             for row in rows:
@@ -199,15 +203,3 @@ def _any(modes, field) -> bool | None:
     """True if any release offers it, None if IGDB says nothing at all."""
     values = [m.get(field) for m in modes if m.get(field) is not None]
     return bool(any(values)) if values else None
-
-
-def apicalypse_name_query(names) -> str:
-    """A batched name lookup, for when the uid join is unusable.
-
-    Kept separate because it is a fallback with a different failure mode:
-    the join is exact, this is fuzzy, and every use of it must run the
-    candidates through `titles.numbers_compatible` before believing them.
-    """
-    quoted = ",".join(json.dumps(n) for n in names)
-    return (f"fields id,name,first_release_date; where name = ({quoted}) & "
-            f"platforms = ({PS4},{PS5}); limit {PAGE};")

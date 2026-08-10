@@ -1,27 +1,24 @@
 /**
  * One game's page body, as a string of HTML.
  *
- * A string rather than an Astro component because it is rendered twice: the
- * popular games are prerendered at build time, and the long tail is rendered
- * in the browser from the index already in memory. Two implementations of the
- * same page would drift, so there is one.
+ * A string rather than an Astro component because it is rendered twice --
+ * prerendered at build time for the popular games, in the browser for the long
+ * tail -- and two implementations of one page would drift.
  *
  * Pure: no fetch, no DOM, no Date.now(). The current year is a parameter.
  */
 import type { Row } from './index';
-import { price, storeUrl } from './index';
+import { artUrl, esc, esrbLabel, price, storeUrl } from './index';
 
-/** How many games get a prerendered page.
- *
- *  Sized to cover the whole deals-plus-free-to-play set, which is ~2,993 rows
- *  and is everything the site links to directly. The backfilled long tail
- *  starts well past this and renders in the browser instead; it needs no data
- *  the page has not already loaded.
+export { esc };
+
+/** How many games get a prerendered page. Covers the whole deals-plus-free set
+ *  (~2,993 rows), which is everything the site links to directly; the tail
+ *  renders in the browser from data it already has.
  *
  *  Build time is not the constraint -- 2,005 pages took 1.4 s locally -- the
  *  10-minute Pages *deployment* timeout is, and 3,000 files is far inside it.
- *  A 12,000-page deploy is still unmeasured, which is why this is not simply
- *  "all of them".
+ *  A 12,000-page deploy is still unmeasured, hence not simply "all of them".
  */
 export const PRERENDERED = 3000;
 
@@ -29,10 +26,6 @@ export const PRERENDERED = 3000;
  *  so a row's position decides whether it has a prerendered page. */
 export const gameUrl = (base: string, id: string, rank: number) =>
   rank < PRERENDERED ? `${base}game/${id}/` : `${base}game/?id=${encodeURIComponent(id)}`;
-
-const esc = (s: unknown) =>
-  String(s ?? '').replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 const row = (label: string, value: string | null) =>
   value ? `<div class="fact"><dt>${esc(label)}</dt><dd>${value}</dd></div>` : '';
@@ -44,11 +37,21 @@ const EVIDENCE: Record<string, string> = {
   none: 'nothing at all, so the score is not meaningful',
 };
 
-export function detailHtml(game: Row, currentYear: number): string {
+/** `art` is a parameter because it does not travel in index.json: the build
+ *  reads it from src/art.json and the browser-rendered tail has none, so the
+ *  long-tail page passes null and simply shows no image. */
+export function detailHtml(
+  game: Row,
+  currentYear: number,
+  art: string | null = null,
+): string {
   const off = game.discount_pct > 0;
   const players = game.local_players;
+  const esrb = esrbLabel(game.esrb);
 
   return `
+    ${art ? `<img class="cover" src="${esc(artUrl(art, 440))}" alt=""
+       width="440" height="440" loading="eager" decoding="async" />` : ''}
     <h1>${esc(game.name)}</h1>
     <p class="price">
       ${game.price_cents === 0
@@ -63,7 +66,7 @@ export function detailHtml(game: Row, currentYear: number): string {
       ${row('Platforms', game.platforms.length ? esc(game.platforms.join(', ')) : null)}
       ${row('Released', game.release_year ? String(game.release_year) : null)}
       ${row('Genres', game.genres.length ? esc(game.genres.join(', ')) : null)}
-      ${row('Rated', game.esrb ? esc(game.esrb) : null)}
+      ${row('Rated', esrb && esc(esrb))}
       ${row('Players on one console', players ? `${players}${players >= 2 ? ' — couch co-op' : ''}` : null)}
       ${row('Split screen', game.splitscreen === null ? null : game.splitscreen ? 'yes' : 'no')}
       ${row('Perspective', game.perspective ? esc(game.perspective) : null)}
@@ -81,10 +84,10 @@ export function detailHtml(game: Row, currentYear: number): string {
       ${row('Evidence behind that', esc(EVIDENCE[game.evidence] ?? game.evidence))}
       ${row('Discount depth', `${Math.round(game.discount_depth)} / 100`)}
       ${row('Money saved', `${Math.round(game.price_anchor)} / 100`)}
-      ${row('Against its lowest recorded price', game.vs_historical_min === null
-        ? 'no usable price history yet' : `${Math.round(game.vs_historical_min!)} / 100`)}
-      ${row('Against its typical sale price', game.vs_typical_sale === null
-        ? 'no usable price history yet' : `${Math.round(game.vs_typical_sale!)} / 100`)}
+      ${row('Against its lowest recorded price', game.vs_historical_min == null
+        ? 'no usable price history yet' : `${Math.round(game.vs_historical_min)} / 100`)}
+      ${row('Against its typical sale price', game.vs_typical_sale == null
+        ? 'no usable price history yet' : `${Math.round(game.vs_typical_sale)} / 100`)}
     </dl>
     <p class="note">
       These are the published components. The final ranking is computed in your

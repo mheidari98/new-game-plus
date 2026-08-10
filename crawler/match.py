@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlencode
 
+from main import CACHE_DB
 from ngp.igdb import PAGE, Igdb
 from ngp.net import HttpClient
 from ngp.ratelimit import AdaptiveLimiter
@@ -109,7 +110,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--measure-accuracy", action="store_true")
     parser.add_argument("--proxy", help="e.g. http://127.0.0.1:2080")
-    parser.add_argument("--cache", default="data/cache/ngp.sqlite")
+    parser.add_argument("--cache", default=CACHE_DB)
     args = parser.parse_args(argv)
     if not args.measure_accuracy:
         parser.print_help()

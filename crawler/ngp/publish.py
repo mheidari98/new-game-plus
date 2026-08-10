@@ -1,19 +1,14 @@
 """Write the published index.
 
-The layout is measured, not stylistic. At 12,000 games:
+The layout is measured, not stylistic. At 12,000 games, gzipped: row-of-objects
+with cover art 1,670,800 B (over budget), columnar without cover art 573,422 B,
+columnar + int dicts 516,677 B. Cover art, id and name are 59% of a naive
+payload -- art alone is 27.1%, so it is not published and is fetched per
+viewport instead. Stripping the constant URL prefix saves only 0.3%: the 48-hex
+asset hash is irreducible. Int dicts barely help the bytes (gzip already
+back-references the repeats) but make client-side filtering a bitmask compare.
 
-    row-of-objects, with cover art   1,670,800 B gzipped   FAILS
-    columnar, no cover art             573,422 B gzipped   passes
-    columnar + int dicts               516,677 B gzipped   passes
-
-Three fields are 59% of a naive payload: cover art, id and name. Cover art
-alone is 27.1%, so it is not published -- art is fetched for the visible
-viewport instead. Stripping the constant URL prefix was measured to save
-0.3%, because the 48-hex asset hash is irreducible; there is no middle path.
-
-Integer dictionaries barely help the bytes (gzip already back-references the
-repeated strings) but make client-side filtering a bitmask compare instead of
-a string compare, which is why they are here.
+Art URLs go to a separate build-only file -- see `save_art`.
 """
 
 from __future__ import annotations
@@ -22,24 +17,23 @@ import gzip
 import json
 from pathlib import Path
 
-# 800 KiB. Pages serves gzip for .json but neither brotli nor zstd, so this
-# is the number that actually reaches a visitor.
+# 800 KiB. Pages serves gzip for .json but neither brotli nor zstd, so this is
+# the number that actually reaches a visitor.
 GZIP_BUDGET_BYTES = 819_200
 
-# Published per game. Deliberately excludes cover art and any precomputed
-# final score -- the browser computes the ranking from the components.
+# No cover art and no precomputed final score -- the browser ranks from the
+# components.
 _SCALARS = [
     "id", "name", "price_cents", "base_cents", "discount_pct", "is_free",
     "plus_extra", "plus_classics", "local_players", "dualsense",
     "release_year", "critic_score", "quality", "discount_depth", "price_anchor",
-    # Null until this project has recorded enough prices for the game. The
-    # browser drops a null term and renormalises the rest, so a game is never
-    # marked down for history we do not have.
+    # Null until we have recorded enough prices; the browser drops a null term
+    # and renormalises, so nothing is marked down for data we lack.
     "vs_historical_min", "vs_typical_sale",
     # Best-effort third-party columns. Null is the normal state for both.
     "hours_main", "splitscreen",
 ]
-_DICTED = ["genres", "esrb", "platforms", "tier", "psvr2", "evidence", "perspective"]
+_DICTED = ["genres", "esrb", "platforms", "psvr2", "evidence", "perspective"]
 _MULTI = {"genres", "platforms"}      # lists per row; the rest are single values
 
 
@@ -72,8 +66,8 @@ def build_index(games, weights, generated_at=None) -> dict:
         "meta": {
             "count": len(games),
             "generated_at": generated_at,
-            # Copied verbatim so the browser reads weights from here rather
-            # than its own constant. The two cannot drift.
+            # Copied verbatim: the browser reads weights from here, never from
+            # its own constant, so the two cannot drift.
             "weights": weights.as_dict(),
         },
         "dicts": dicts,
@@ -84,9 +78,8 @@ def build_index(games, weights, generated_at=None) -> dict:
 def render(games, weights, generated_at=None) -> tuple[bytes, bytes, dict]:
     """Serialise the index without writing it anywhere.
 
-    Separate from saving so the failure policy can run on the real sizes and
-    refuse *before* anything lands on disk. A stale-but-correct site beats a
-    fresh-but-wrong one.
+    Separate from `save` so the guard can check the real sizes and refuse
+    before anything lands on disk: a stale correct site beats a fresh wrong one.
     """
     body = json.dumps(build_index(games, weights, generated_at),
                       separators=(",", ":")).encode()
@@ -96,16 +89,25 @@ def render(games, weights, generated_at=None) -> tuple[bytes, bytes, dict]:
         "over_budget": len(packed) > GZIP_BUDGET_BYTES}
 
 
+def save_art(path, games) -> int:
+    """Cover-art URLs, keyed by product id, for the site build to read.
+
+    Kept out of index.json on measurement: a URL costs 34.6 B gzipped per row
+    that gzip cannot shrink -- the 48-hex asset hash is random -- which is
+    428 KB at the full catalogue and puts the payload over budget. This file
+    is build input only. It is written outside `public/`, so the static pages
+    bake `<img>` tags in at build time and no browser ever downloads it.
+    """
+    art = {g["id"]: g["art"] for g in games if g.get("art")}
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(art, separators=(",", ":"), sort_keys=True))
+    return len(art)
+
+
 def save(path, body: bytes, packed: bytes) -> None:
     """index.json plus a precompressed .gz sidecar."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)
     path.with_suffix(".json.gz").write_bytes(packed)
-
-
-def write_index(games, weights, path, generated_at=None) -> dict:
-    """Render and save in one step, for callers with nothing to check."""
-    body, packed, stats = render(games, weights, generated_at)
-    save(path, body, packed)
-    return stats

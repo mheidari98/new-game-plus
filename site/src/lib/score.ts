@@ -1,13 +1,12 @@
 /**
  * Ranking, computed in the browser.
  *
- * The crawler publishes score *components*; this combines them. That is what
- * makes the "I have PS+ Extra" toggle and the weight sliders real rather than
- * cosmetic, and it means the ranking can be checked by hand.
+ * The crawler publishes score *components*; this combines them, which is what
+ * makes the PS+ toggle and the weight sliders real rather than cosmetic.
  *
- * Weights come from index.json (meta.weights), which is a verbatim copy of
- * crawler/weights.toml. Never hardcode them here -- one copy at runtime is
- * what stops the site and crawler drifting.
+ * Weights come from index.json (meta.weights), a verbatim copy of
+ * crawler/weights.toml. Never hardcode them here -- one copy at runtime is what
+ * stops the site and crawler drifting.
  *
  * Pure: no fetch, no DOM, no Date.now().
  */
@@ -62,11 +61,9 @@ function valueScore(game: Game): number {
 }
 
 /** Blend the deal terms, dropping the ones we have no evidence for and
- *  renormalising what is left.
- *
- *  Price history starts when this project did, so for most games the two
- *  history terms are null for a long time. Scoring them zero would punish a
- *  game for our own missing data; dropping them says "no evidence" instead.
+ *  renormalising what is left. Price history starts when this project did, so
+ *  the two history terms are null for most games for a long time: scoring them
+ *  zero would punish a game for our own missing data.
  */
 export function dealScore(game: Game, weights: Weights): number {
   const terms: [number, number | null | undefined][] = [

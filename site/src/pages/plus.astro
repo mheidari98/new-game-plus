@@ -69,10 +69,10 @@ const headline = [...inExtra]
     </p>
   </section>
 
-  <style>
+  <!-- Global because the island builds most of this markup at runtime, where a
+       scoped style never reaches it. Only this page loads these rules. -->
+  <style is:global>
     h1 em { font-style: normal; color: var(--accent); }
-    .loading { color: var(--muted); }
-    .note { color: var(--muted); font-size: 0.95rem; }
     .picker { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;
               margin: 1.5rem 0 0.5rem; }
     .picker input[type=search] { flex: 1 1 16rem; padding: 0.5rem 0.7rem; font: inherit;
@@ -97,9 +97,6 @@ const headline = [...inExtra]
     .wishlist li { display: flex; gap: 0.6rem; align-items: baseline;
                    border-bottom: 1px solid var(--line); padding-bottom: 0.35rem; }
     .wishlist .name { flex: 1; }
-    .wishlist .tag { border: 1px solid var(--line); border-radius: 999px;
-                     padding: 0.05em 0.5em; font-size: 0.78rem; }
-    .wishlist .in { border-color: var(--free); color: var(--free); }
     .wishlist button { background: none; border: 0; color: var(--muted);
                        cursor: pointer; font: inherit; }
     .wishlist button:hover { color: var(--accent); }
@@ -109,12 +106,13 @@ const headline = [...inExtra]
   </style>
 
   <script>
-    import { decode, price } from '../lib/index';
-    import { evaluate, TIERS, type Pick, type Tier } from '../lib/plusmath';
+    import { esc, loadIndex, price } from '../lib/index';
+    import { coveredBy, evaluate, TIERS, type Pick, type Tier } from '../lib/plusmath';
 
     const app = document.getElementById('app')!;
     const STORE_KEY = 'ngp:wishlist';
 
+    // The wishlist never leaves the browser: localStorage, no account, no upload.
     const load = (): string[] => {
       try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); }
       catch { return []; }              // corrupt or blocked storage is an empty list
@@ -123,105 +121,107 @@ const headline = [...inExtra]
       try { localStorage.setItem(STORE_KEY, JSON.stringify(ids)); } catch { /* private mode */ }
     };
 
-    const res = await fetch(app.dataset.src!);
-    const { rows } = decode(await res.json());
-    const byId = new Map(rows.map((r) => [r.id, r]));
+    const index = await loadIndex(app);
+    if (index) {
+      const { rows } = index;
+      const byId = new Map(rows.map((r) => [r.id, r]));
 
-    let chosen = load().filter((id) => byId.has(id));
-    let tier: Tier = { ...TIERS[1] };
-    let query = '';
+      let chosen = load().filter((id) => byId.has(id));
+      let tier: Tier = { ...TIERS.find((t) => t.id === 'extra')! };
+      let query = '';
 
-    app.innerHTML = `
-      <div class="picker">
-        <input type="search" id="q" placeholder="Add a game you were going to buy…" />
-      </div>
-      <ul class="suggest" id="suggest"></ul>
-      <div class="tiers" id="tiers"></div>
-      <div class="verdict" id="verdict"></div>
-      <ul class="wishlist" id="wishlist"></ul>`;
+      app.innerHTML = `
+        <div class="picker">
+          <input type="search" id="q" placeholder="Add a game you were going to buy…" />
+        </div>
+        <ul class="suggest" id="suggest"></ul>
+        <div class="tiers" id="tiers"></div>
+        <div class="verdict" id="verdict"></div>
+        <ul class="wishlist" id="wishlist"></ul>`;
 
-    const el = (id: string) => document.getElementById(id)!;
+      const el = (id: string) => document.getElementById(id)!;
 
-    el('tiers').innerHTML = TIERS.map((t) => `
-      <label>
-        <input type="radio" name="tier" value="${t.id}" ${t.id === tier.id ? 'checked' : ''} />
-        ${t.label}
-      </label>`).join('') + `
-      <label>$ per year
-        <input type="number" id="cost" min="0" step="1" value="${(tier.yearlyCents / 100).toFixed(0)}" />
-      </label>`;
+      el('tiers').innerHTML = TIERS.map((t) => `
+        <label>
+          <input type="radio" name="tier" value="${t.id}" ${t.id === tier.id ? 'checked' : ''} />
+          ${t.label}
+        </label>`).join('') + `
+        <label>$ per year
+          <input type="number" id="cost" min="0" step="1" value="${(tier.yearlyCents / 100).toFixed(0)}" />
+        </label>`;
 
-    function render() {
-      const picks: Pick[] = chosen.map((id) => byId.get(id)!);
-      const verdict = evaluate(picks, tier);
-      const net = Math.abs(verdict.netCents);
+      function render() {
+        const picks: Pick[] = chosen.map((id) => byId.get(id)!);
+        const verdict = evaluate(picks, tier);
+        const net = Math.abs(verdict.netCents);
 
-      el('verdict').innerHTML = verdict.worthIt
-        ? `<h2 class="yes">Yes — by ${price(net)}</h2>
-           <p>${verdict.covered.length} of your ${picks.length} game${picks.length === 1 ? '' : 's'}
-           ${verdict.covered.length === 1 ? 'is' : 'are'} in the ${tier.label} catalogue,
-           worth ${price(verdict.coveredCents)} at today's prices against
-           ${price(verdict.costCents)} a year.</p>
-           <p class="note">${tier.note}</p>`
-        : `<h2 class="no">${picks.length ? 'Not yet' : 'Add some games'} — ${price(net)} short</h2>
-           <p>${picks.length
-              ? `Only ${price(verdict.coveredCents)} of your list is in the ${tier.label} catalogue,
-                 against ${price(verdict.costCents)} a year. Buying the ones you want outright is
-                 cheaper.`
-              : `A subscription costs ${price(verdict.costCents)} a year. Add what you were going
-                 to buy and see whether the catalogue already covers it.`}</p>
-           <p class="note">${tier.note}</p>`;
+        el('verdict').innerHTML = verdict.worthIt
+          ? `<h2 class="yes">Yes — by ${price(net)}</h2>
+             <p>${verdict.covered.length} of your ${picks.length} game${picks.length === 1 ? '' : 's'}
+             ${verdict.covered.length === 1 ? 'is' : 'are'} in the ${tier.label} catalogue,
+             worth ${price(verdict.coveredCents)} at today's prices against
+             ${price(verdict.costCents)} a year.</p>
+             <p class="note">${tier.note}</p>`
+          : `<h2 class="no">${picks.length ? 'Not yet' : 'Add some games'} — ${price(net)} short</h2>
+             <p>${picks.length
+                ? `Only ${price(verdict.coveredCents)} of your list is in the ${tier.label} catalogue,
+                   against ${price(verdict.costCents)} a year. Buying the ones you want outright is
+                   cheaper.`
+                : `A subscription costs ${price(verdict.costCents)} a year. Add what you were going
+                   to buy and see whether the catalogue already covers it.`}</p>
+             <p class="note">${tier.note}</p>`;
 
-      el('wishlist').innerHTML = picks.map((g) => {
-        const covered = verdict.covered.includes(g);
-        return `<li>
-          <span class="name">${g.name}</span>
-          <span class="tag ${covered ? 'in' : ''}">${covered ? 'in the catalogue' : price(g.price_cents)}</span>
-          <button data-remove="${g.id}" aria-label="Remove ${g.name}">remove</button>
-        </li>`;
-      }).join('');
+        el('wishlist').innerHTML = picks.map((g) => {
+          const covered = coveredBy(tier.id, g);
+          return `<li>
+            <span class="name">${esc(g.name)}</span>
+            <span class="tag ${covered ? 'in' : ''}">${covered ? 'in the catalogue' : price(g.price_cents)}</span>
+            <button data-remove="${esc(g.id)}" aria-label="Remove ${esc(g.name)}">remove</button>
+          </li>`;
+        }).join('');
 
-      const q = query.trim().toLowerCase();
-      el('suggest').innerHTML = !q ? '' : rows
-        .filter((r) => r.name.toLowerCase().includes(q) && !chosen.includes(r.id))
-        .slice(0, 8)
-        .map((r) => `<li><button data-add="${r.id}">${r.name} — ${price(r.price_cents)}${
-          r.plus_extra ? ' · in Extra' : r.plus_classics ? ' · in Classics' : ''}</button></li>`)
-        .join('');
+        const q = query.trim().toLowerCase();
+        el('suggest').innerHTML = !q ? '' : rows
+          .filter((r) => r.name.toLowerCase().includes(q) && !chosen.includes(r.id))
+          .slice(0, 8)
+          .map((r) => `<li><button data-add="${esc(r.id)}">${esc(r.name)} — ${price(r.price_cents)}${
+            r.plus_extra ? ' · in Extra' : r.plus_classics ? ' · in Classics' : ''}</button></li>`)
+          .join('');
+      }
+
+      app.addEventListener('click', (e) => {
+        const button = (e.target as HTMLElement).closest('button');
+        if (!button) return;
+        const add = button.dataset.add;
+        const remove = button.dataset.remove;
+        if (add) { chosen = [...chosen, add]; query = ''; (el('q') as HTMLInputElement).value = ''; }
+        if (remove) chosen = chosen.filter((id) => id !== remove);
+        save(chosen);
+        render();
+      });
+
+      el('q').addEventListener('input', (e) => {
+        query = (e.target as HTMLInputElement).value;
+        render();
+      });
+
+      el('tiers').addEventListener('change', (e) => {
+        const input = e.target as HTMLInputElement;
+        if (input.name !== 'tier') return;
+        // Switching tier resets the price to that tier's list price; editing it
+        // afterwards wins, because a 12-month card rarely costs list.
+        tier = { ...TIERS.find((t) => t.id === input.value)! };
+        (el('cost') as HTMLInputElement).value = (tier.yearlyCents / 100).toFixed(0);
+        render();
+      });
+
+      el('cost').addEventListener('input', (e) => {
+        const dollars = Number((e.target as HTMLInputElement).value);
+        tier = { ...tier, yearlyCents: Math.max(0, Math.round(dollars * 100)) };
+        render();
+      });
+
+      render();
     }
-
-    app.addEventListener('click', (e) => {
-      const button = (e.target as HTMLElement).closest('button');
-      if (!button) return;
-      const add = button.dataset.add;
-      const remove = button.dataset.remove;
-      if (add) { chosen = [...chosen, add]; query = ''; (el('q') as HTMLInputElement).value = ''; }
-      if (remove) chosen = chosen.filter((id) => id !== remove);
-      save(chosen);
-      render();
-    });
-
-    el('q').addEventListener('input', (e) => {
-      query = (e.target as HTMLInputElement).value;
-      render();
-    });
-
-    el('tiers').addEventListener('change', (e) => {
-      const input = e.target as HTMLInputElement;
-      if (input.name !== 'tier') return;
-      // Switching tier resets the price to that tier's list price; editing it
-      // afterwards wins, because a 12-month card rarely costs list.
-      tier = { ...TIERS.find((t) => t.id === input.value)! };
-      (el('cost') as HTMLInputElement).value = (tier.yearlyCents / 100).toFixed(0);
-      render();
-    });
-
-    el('cost').addEventListener('input', (e) => {
-      const dollars = Number((e.target as HTMLInputElement).value);
-      tier = { ...tier, yearlyCents: Math.max(0, Math.round(dollars * 100)) };
-      render();
-    });
-
-    render();
   </script>
 </Base>

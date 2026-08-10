@@ -13,7 +13,7 @@ test: check                 ## everything, no network required
 	cd site && npx vitest run
 
 crawl:                      ## live crawl against the real store
-	python crawler/main.py --once -v
+	python crawler/main.py -v
 
 site:                       ## build the static site
 	cd site && npm run build

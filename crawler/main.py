@@ -1,9 +1,9 @@
 """Crawl the US PlayStation Store and publish the site index.
 
-    python -m main --once                    # deals only, the M1 shape
-    python -m main --once --limit 50         # quick iteration
-    python -m main --backfill --cap 5000     # extend to the full catalogue
-    python -m main --proxy http://127.0.0.1:2080
+    python crawler/main.py                       # the deals set
+    python crawler/main.py --limit 50            # quick iteration
+    python crawler/main.py --backfill --cap 5000 # extend to the full catalogue
+    python crawler/main.py --proxy http://127.0.0.1:2080
 
 Runs with zero secrets. Enrichment is resumable: a run that dies leaves its
 rows unstamped and the next one continues from the TTL cursor.
@@ -25,12 +25,12 @@ from ngp.cache import Cache
 from ngp.components import Weights, discount_depth, price_anchor, price_vs, quality
 from ngp.features import decode_features
 from ngp.guard import PublishBlocked, check_publishable
-from ngp.hltb import HowLongToBeat
+from ngp.hltb import HowLongToBeat, SearchFailed
 from ngp.igdb import Igdb
 from ngp.net import HttpClient, workers_for
 from ngp.psplus import PlusIndex, fetch_all
-from ngp.publish import render, save
-from ngp.ratelimit import AdaptiveLimiter
+from ngp.publish import render, save, save_art
+from ngp.ratelimit import AdaptiveLimiter, RateLimitExceeded
 from ngp.ratings import Metacritic
 from ngp.store import MAX_WINDOW, StoreClient, money_to_cents
 
@@ -38,6 +38,10 @@ log = logging.getLogger("ngp")
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent          # so --out/--cache are the same wherever you run from
+
+# match.py reads the same file: a moved default there would silently report
+# zero IGDB coverage instead of failing.
+CACHE_DB = "data/cache/ngp.sqlite"
 
 CATEGORIES = json.loads((HERE / "categories.json").read_text())
 GAME_CLASSES = ["FULL_GAME", "GAME_BUNDLE", "PREMIUM_EDITION"]
@@ -48,6 +52,13 @@ SALES30 = {"name": "sales30", "isAscending": False}
 
 PRICE_FACET = "webBasePrice"
 
+# Cover art, best role first. MASTER is the square tile the store itself leads
+# with and was the only role present on all 18 products sampled across the
+# popularity range, so the rest are insurance. LOGO and SCREENSHOT are never
+# box art. The URL carries a 48-hex asset hash, so it cannot be derived from a
+# product id -- it is fetched or it is nothing.
+ART_ROLES = ("MASTER", "GAMEHUB_COVER_ART", "PORTRAIT_BANNER")
+
 # Catalogue-only concepts queue behind everything in the deals grid: the deals
 # set is what the site leads with, and it is at most ~4,500 rows.
 CATALOGUE_RANK_BASE = 100_000
@@ -56,15 +67,6 @@ CATALOGUE_RANK_BASE = 100_000
 # infrastructure, and making Metacritic's ~5,000 requests queue behind the
 # store's token bucket cost ~14 minutes a run for nothing.
 PACED_HOSTS = ("playstation.com", "metacritic.com")
-
-
-def tier_of(base_cents):
-    """Premium / mid / indie, from launch price."""
-    if base_cents is None:
-        return None
-    if base_cents >= 5999:
-        return "premium"
-    return "mid" if base_cents >= 1999 else "indie"
 
 
 def crawl(args):
@@ -78,7 +80,11 @@ def crawl(args):
     state_dir = (REPO / args.cache).parent
     state_dir.mkdir(parents=True, exist_ok=True)
     cache = Cache(REPO / args.cache)
-    previous = _read_previous_count(state_dir / "last_good.json")
+    last_good = state_dir / "last_good.json"
+    try:
+        previous = json.loads(last_good.read_text())["game_count"]
+    except Exception:
+        previous = None
     log.info("pacing: %d workers, each host ramping from %.2f toward %.2f req/s",
              workers, args.rate, args.max_rate)
 
@@ -93,21 +99,61 @@ def crawl(args):
 
         log.info("enumerating deals")
         baseline = store.grid_page(CATEGORIES["deals"], size=1).total
-        products = _enumerate(store, CATEGORIES["deals"], baseline)
+        products, offset = [], 0
+        while offset < baseline:
+            page = store.grid_page(
+                CATEGORIES["deals"], offset=offset, size=1000, sort_by=SALES30,
+                filter_by=[f"storeDisplayClassification:{c}" for c in GAME_CLASSES],
+                baseline_total=baseline if offset == 0 else None,
+            )
+            if not page.products:
+                break
+            products.extend(page.products)
+            offset += len(page.products)
+            if page.is_last:
+                break
         log.info("deals: %d products, %d game-like", baseline, len(products))
 
         # The curated free-to-play category, not "price == 0 in the deals
         # grid" -- that returns cosmetic bundles like "War Thunder Cyberpunk
         # Airforce Snail Bundle" rather than games anyone would recommend.
         # One request for the whole thing.
-        free = _free_to_play(store)
+        free, _ = _rows_from_concepts(
+            store.grid_page(CATEGORIES["free_to_play"], size=1000,
+                            sort_by=SALES30).concepts)
+        for row in free:
+            # Free by definition, so an absent price is a gap in the grid
+            # rather than an unknown.
+            row["price"] = row["price"] or {"basePrice": "Free",
+                                            "discountedPrice": "Free", "isFree": True}
         log.info("free-to-play: %d concepts", len(free))
         products.extend(free)
 
         log.info("mapping products to concepts")
-        concept_of = _concept_map(store)
+        # Bulk product->concept from the concept grids: 17 requests, not 4,336.
+        concept_of = {}
+        for key in ("all_games", "all_ps5_games"):
+            offset = 0
+            while offset < MAX_WINDOW:
+                page = store.grid_page(CATEGORIES[key], offset=offset, size=1000)
+                if not page.concepts:
+                    break
+                concept_of.update(page.product_to_concept())
+                offset += len(page.concepts)
+                if page.is_last:
+                    break
 
-        rows = _rank_and_seed(cache, products, concept_of)
+        rows = {}
+        for rank, prod in enumerate(products):
+            # Concept-grid rows already know their concept. Otherwise use the
+            # bulk map, falling back to the product id so an unmapped row still
+            # gets a stable key.
+            cid = prod.get("_concept_id") or concept_of.get(prod["id"]) or prod["id"]
+            rows.setdefault(cid, {"concept_id": cid, "rank": rank, "product": prod})
+        cache.upsert_concepts([
+            {"concept_id": cid, "rank": r["rank"], "product_id": r["product"]["id"]}
+            for cid, r in rows.items()
+        ])
 
         # HowLongToBeat has its own client, its own much slower limiter and its
         # own host, so it has no reason to wait for the store passes. Run it
@@ -118,9 +164,25 @@ def crawl(args):
             playtime.start()
 
         if args.backfill:
-            added, unreleased = _extend_to_catalogue(store, cache, rows)
+            # `rows` is extended in place, so publishing needs no second code
+            # path. Concepts already in the deals set keep their deals rank --
+            # they are the ones the site leads with.
+            found, unreleased = catalogue_concepts(store, CATEGORIES["all_games"])
+            added = []
+            for index, row in enumerate(found):
+                cid = row["_concept_id"]
+                if cid in rows:
+                    continue
+                rows[cid] = {"concept_id": cid, "rank": CATALOGUE_RANK_BASE + index,
+                             "product": row}
+                added.append(rows[cid])
+            cache.upsert_concepts([
+                {"concept_id": r["concept_id"], "rank": r["rank"],
+                 "product_id": r["product"]["id"]} for r in added
+            ])
             log.info("catalogue: +%d concepts beyond the deals set, %d unreleased "
-                     "concepts skipped (no product to price or enrich)", added, unreleased)
+                     "concepts skipped (no product to price or enrich)",
+                     len(added), unreleased)
 
         enriched, failed, matched, attempted = _enrich(
             store, Metacritic(http), cache, rows, args, workers)
@@ -151,8 +213,7 @@ def crawl(args):
     check_publishable(
         game_count=len(games),
         previous_game_count=previous,
-        plus_extra_count=sum(1 for e in plus._by_concept.values()
-                             if any(x.in_extra for x in e)),
+        plus_extra_count=plus.extra_count,
         gzip_bytes=stats["gzip_bytes"],
         enrichment_attempted=enriched + failed,
         enrichment_failed=failed,
@@ -160,7 +221,9 @@ def crawl(args):
         baseline_count=baseline,
     )
     save(REPO / args.out, body, packed)
-    (state_dir / "last_good.json").write_text(json.dumps({"game_count": len(games)}))
+    with_art = save_art(REPO / args.art, games)
+    last_good.write_text(json.dumps({"game_count": len(games)}))
+    log.info("cover art: %d of %d games", with_art, len(games))
 
     log.info("published %d games: %d B raw, %d B gzipped (%.0f%% of budget)",
              stats["count"], stats["raw_bytes"], stats["gzip_bytes"],
@@ -173,24 +236,6 @@ def crawl(args):
         for host, lim in limiters.items()))
     cache.close()
     return stats
-
-
-def _enumerate(store, category, baseline):
-    """Walk the deals grid, games only."""
-    out, offset = [], 0
-    while offset < baseline:
-        page = store.grid_page(
-            category, offset=offset, size=1000, sort_by=SALES30,
-            filter_by=[f"storeDisplayClassification:{c}" for c in GAME_CLASSES],
-            baseline_total=baseline if offset == 0 else None,
-        )
-        if not page.products:
-            break
-        out.extend(page.products)
-        offset += len(page.products)
-        if page.is_last:
-            break
-    return out
 
 
 def _rows_from_concepts(concepts):
@@ -215,19 +260,6 @@ def _rows_from_concepts(concepts):
             "_concept_id": concept["id"],
         })
     return rows, unreleased
-
-
-def _free_to_play(store):
-    """The curated F2P catalogue. One request for all of it."""
-    page = store.grid_page(CATEGORIES["free_to_play"], size=1000,
-                           sort_by=SALES30)
-    rows, _ = _rows_from_concepts(page.concepts)
-    for row in rows:
-        # Free by definition, so an absent price is a gap in the grid rather
-        # than an unknown.
-        row["price"] = row["price"] or {"basePrice": "Free",
-                                        "discountedPrice": "Free", "isFree": True}
-    return rows
 
 
 def catalogue_concepts(store, category):
@@ -277,79 +309,17 @@ def catalogue_concepts(store, category):
     return list(rows.values()), unreleased
 
 
-def _concept_map(store):
-    """Bulk product->concept from the concept grids: 17 requests, not 4,336."""
-    mapping = {}
-    for key in ("all_games", "all_ps5_games"):
-        offset = 0
-        while offset < 10_000:
-            page = store.grid_page(CATEGORIES[key], offset=offset, size=1000)
-            if not page.concepts:
-                break
-            mapping.update(page.product_to_concept())
-            offset += len(page.concepts)
-            if page.is_last:
-                break
-    return mapping
-
-
-def _rank_and_seed(cache, products, concept_of):
-    """Grid order is sales30, so enumeration order is popularity order."""
-    rows = {}
-    for rank, prod in enumerate(products):
-        pid = prod["id"]
-        # Concept-grid rows already know their concept. Otherwise use the bulk
-        # map, falling back to the product id so an unmapped row still gets a
-        # stable key.
-        cid = prod.get("_concept_id") or concept_of.get(pid) or pid
-        rows.setdefault(cid, {"concept_id": cid, "rank": rank, "product": prod})
-    cache.upsert_concepts([
-        {"concept_id": cid, "rank": r["rank"], "product_id": r["product"]["id"]}
-        for cid, r in rows.items()
-    ])
-    return rows
-
-
-def _extend_to_catalogue(store, cache, rows):
-    """Add every concept in the full catalogue that the deals set missed.
-
-    `rows` is mutated in place, so the publish step covers the catalogue too
-    and does not need a second code path. Concepts already seen keep their
-    deals rank -- they are the ones the site leads with.
-    """
-    found, unreleased = catalogue_concepts(store, CATEGORIES["all_games"])
-    added = []
-    for index, row in enumerate(found):
-        cid = row["_concept_id"]
-        if cid in rows:
-            continue
-        rows[cid] = {"concept_id": cid, "rank": CATALOGUE_RANK_BASE + index,
-                     "product": row}
-        added.append(rows[cid])
-    cache.upsert_concepts([
-        {"concept_id": r["concept_id"], "rank": r["rank"],
-         "product_id": r["product"]["id"]} for r in added
-    ])
-    return len(added), unreleased
-
-
 def _enrich(store, metacritic, cache, rows, args, workers):
-    """Everything a concept needs, in one task: store detail, store stars and
-    the Metacritic lookup.
+    """Everything a concept needs in one task: store detail, stars, Metacritic.
 
-    Merged rather than run as two passes, because the hosts are paced
-    independently. As two passes their rates apply end to end -- 10,000 store
-    requests, *then* 5,000 Metacritic ones -- and the second host sits idle
-    throughout the first. Merged, both rates apply at once and the run takes
-    as long as the busier host alone.
+    Merged because the hosts are paced independently: as two passes the rates
+    apply end to end -- 10,000 store requests, *then* 5,000 Metacritic ones --
+    and each host idles through the other's phase. It also keeps Metacritic's
+    year disambiguation working (2001 Silent Hill 2 vs the 2024 remake): the
+    release date comes from the detail fetched moments earlier in this task.
 
-    It also keeps Metacritic's disambiguation working. The year that separates
-    the 2001 Silent Hill 2 from the 2024 remake comes from the product detail
-    fetched moments earlier in this same task; a concurrent pass would race it
-    and match on the title alone.
-
-    The two sources keep their own TTLs, so a concept can be due for one and
-    fresh for the other.
+    Each source keeps its own TTL, so a concept can be due for one and fresh
+    for the other.
     """
     limit = args.limit or args.cap
     due_detail = cache.due("product", ttl_days=args.ttl, limit=limit)
@@ -367,27 +337,24 @@ def _enrich(store, metacritic, cache, rows, args, workers):
              len(todo), len(rows), len(due_detail), len(due_critic))
 
     def one(cid):
-        """`(detail fetched?, critic matched?)`, either None if not due."""
+        """`(details fetched, details failed, critic scores matched)`, 0 or 1 each."""
         row = rows.get(cid)
         if not row:
-            return None, None
-        detail_ok = _fetch_detail(store, cache, cid, row) if cid in detail_set else None
-        if detail_ok is False:
-            return False, None
-        critic = _fetch_critic(metacritic, cache, cid, row, args.ttl) \
-            if cid in critic_set else None
-        return detail_ok, critic
+            return 0, 0, 0
+        if cid in detail_set and not _fetch_detail(store, cache, cid, row):
+            # No critic lookup: matching on the grid name alone loses the year.
+            return 0, 1, 0
+        critic = (cid in critic_set
+                  and _fetch_critic(metacritic, cache, cid, row, args.ttl))
+        return int(cid in detail_set), 0, int(bool(critic))
 
     ok = fail = matched = 0
     # pool.map yields in the main thread, so the counters need no lock.
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for detail_ok, critic in pool.map(one, todo):
-            if detail_ok is True:
-                ok += 1
-            elif detail_ok is False:
-                fail += 1
-            if critic:
-                matched += 1
+        for fetched, failed, hit in pool.map(one, todo):
+            ok += fetched
+            fail += failed
+            matched += hit
     return ok, fail, matched, len(due_critic)
 
 
@@ -399,6 +366,8 @@ def _fetch_detail(store, cache, cid, row):
         stars = store.stars(row["product"]["id"])
         feats = decode_features(detail.get("compatibilityNotices"))
         rating = stars.get("starRating") or {}
+        images = {m.get("role"): m.get("url") for m in (detail.get("media") or [])
+                  if m.get("type") == "IMAGE" and m.get("url")}
         cache.put("product", cid, {
             "name": detail.get("name") or row["product"].get("name"),
             # Concept grids do not carry platforms, so for anything found
@@ -413,9 +382,12 @@ def _fetch_detail(store, cache, cid, row):
             "psvr2": feats.psvr2,
             "star_average": rating.get("averageRating"),
             "star_count": rating.get("totalRatingsCount"),
+            "art": next((images[r] for r in ART_ROLES if r in images), None),
         })
         cache.mark("product", cid)
         return True
+    except RateLimitExceeded:
+        raise           # the circuit breaker, not one row's failure
     except Exception as exc:
         log.warning("enrich %s failed: %s", cid, exc)
         return False
@@ -424,12 +396,13 @@ def _fetch_detail(store, cache, cid, row):
 def _fetch_critic(metacritic, cache, cid, row, ttl):
     """One Metacritic search. A miss is stored exactly like a hit, or every
     run re-asks about the same few hundred titles that will never have one."""
-    detail = cache.get("product", cid, ttl_days=ttl) or {}
-    name = detail.get("name") or (row and row["product"].get("name"))
+    name, year = _known_name_and_year(cache, cid, row, ttl)
     if not name:
         return None
     try:
-        critic = metacritic.lookup(name, _release_year(detail.get("release")))
+        critic = metacritic.lookup(name, year)
+    except RateLimitExceeded:
+        raise           # the circuit breaker, not one row's failure
     except Exception as exc:
         log.warning("metacritic %s failed: %s", cid, exc)
         return None
@@ -437,6 +410,14 @@ def _fetch_critic(metacritic, cache, cid, row, ttl):
                               "url": critic.url} if critic else {})
     cache.mark("critic", cid)
     return critic is not None
+
+
+def _known_name_and_year(cache, cid, row, ttl):
+    """What the third-party matchers key on: the store's name and release year
+    if we have the detail, else the grid row's name."""
+    detail = cache.get("product", cid, ttl_days=ttl) or {}
+    return (detail.get("name") or (row and row["product"].get("name")),
+            _release_year(detail.get("release")))
 
 
 def _enrich_playtime(cache, rows, args):
@@ -462,12 +443,16 @@ def _enrich_playtime(cache, rows, args):
 
         found = 0
         for cid in todo:
-            row = rows.get(cid)
-            detail = cache.get("product", cid, ttl_days=args.ttl) or {}
-            name = detail.get("name") or (row and row["product"].get("name"))
+            name, year = _known_name_and_year(cache, cid, rows.get(cid), args.ttl)
             if not name:
                 continue
-            play = hltb.lookup(name, _release_year(detail.get("release")))
+            try:
+                play = hltb.lookup(name, year)
+            except SearchFailed as exc:
+                # Not an answer. Leaving the row unstamped is the retry: the
+                # next run's `due` picks it up again.
+                log.warning("hltb lookup failed for %s: %s", cid, exc)
+                continue
             cache.put("playtime", cid,
                       {"hours_main": play.main_hours, "title": play.title,
                        "hltb_id": play.hltb_id} if play else {})
@@ -498,8 +483,18 @@ def _enrich_editorial(igdb, cache, rows, args):
                     "split-screen and perspective stay null")
         return 0
 
-    keys = {cid: _igdb_key(shape, cid, rows.get(cid)) for cid in todo}
-    matched = {cid: index[key] for cid, key in keys.items() if key in index}
+    # Our side of the join, in whatever identifier IGDB turned out to hold.
+    matched = {}
+    for cid in todo:
+        product_id = rows[cid]["product"]["id"] if cid in rows else ""
+        if shape == "concept_id":
+            key = str(cid)
+        elif shape == "product_id":
+            key = product_id
+        else:   # UP9000-PPSA26344_00-GHOST2SHIP000000 -> the npTitleId in the middle
+            key = (product_id.split("-") + [""])[1]
+        if key in index:
+            matched[cid] = index[key]
     editorial = igdb.editorial(matched.values())
 
     for cid in todo:
@@ -512,17 +507,6 @@ def _enrich_editorial(igdb, cache, rows, args):
         cache.mark("igdb", cid)
     log.info("igdb: %d of %d concepts joined on %s", len(matched), len(todo), shape)
     return len(matched)
-
-
-def _igdb_key(shape, concept_id, row):
-    """Our side of the join, in whatever identifier IGDB turned out to store."""
-    product_id = row["product"]["id"] if row else ""
-    if shape == "concept_id":
-        return str(concept_id)
-    if shape == "product_id":
-        return product_id
-    parts = product_id.split("-")            # UP9000-PPSA26344_00-GHOST2SHIP000000
-    return parts[1] if len(parts) > 1 else ""
 
 
 def _release_year(value):
@@ -571,7 +555,6 @@ def _assemble(rows, cache, plus, weights, args):
             "psvr2": detail.get("psvr2"),
             "dualsense": bool(detail.get("dualsense")),
             "release_year": _release_year(detail.get("release")),
-            "tier": tier_of(base_cents),
             "critic_score": critic.get("score"),
             # HowLongToBeat first, IGDB's time-to-beat as the substitute. Both
             # are best-effort and either may be absent.
@@ -582,6 +565,8 @@ def _assemble(rows, cache, plus, weights, args):
             "discount_depth": round(discount_depth(discount, weights), 1),
             "price_anchor": round(price_anchor(base_cents, price_cents, weights), 1),
             "evidence": q.evidence,
+            # Not published in index.json -- see publish.save_art.
+            "art": detail.get("art"),
         })
     return games
 
@@ -610,16 +595,8 @@ def _score_against_history(root, games, today, weights):
     return written, scored
 
 
-def _read_previous_count(path):
-    try:
-        return json.loads(Path(path).read_text())["game_count"]
-    except Exception:
-        return None
-
-
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--once", action="store_true", help="crawl the deals set")
     p.add_argument("--backfill", action="store_true", help="extend to the full catalogue")
     p.add_argument("--limit", type=int, help="stop after N enrichments (iteration)")
     p.add_argument("--cap", type=int, default=25_000, help="max enrichments per run")
@@ -646,10 +623,12 @@ def main(argv=None):
     p.add_argument("--max-rate", type=float, default=12.0,
                    help="ceiling req/s, per host")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:2080")
-    p.add_argument("--cache", default="data/cache/ngp.sqlite")
+    p.add_argument("--cache", default=CACHE_DB)
     p.add_argument("--history", default="history",
                    help="price-history checkout (the `data` branch in CI)")
     p.add_argument("--out", default="site/public/index.json")
+    # Outside public/ on purpose: build input, never served to a browser.
+    p.add_argument("--art", default="site/src/art.json")
     p.add_argument("-v", "--verbose", action="count", default=0)
     args = p.parse_args(argv)
 

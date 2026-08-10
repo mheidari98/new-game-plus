@@ -140,14 +140,14 @@ decide whether we reach the rate we already chose. `MAX_WORKERS` is a guard agai
 
 ```bash
 make setup
-make test                    # 310 pytest + 44 vitest + invariants, no network
+make test                    # 340 pytest + 64 vitest + invariants, no network
 make check                   # invariants only, ~1s
 ```
 
 A full crawl, which does hit the live store:
 
 ```bash
-python crawler/main.py --once -v            # the deals set, ~7,000 requests
+python crawler/main.py -v                   # the deals set, ~7,000 requests
 python crawler/main.py --backfill --cap 3000 -v   # extend to the whole catalogue
 python crawler/ngp/history.py --report      # what price history we actually have
 python crawler/match.py --measure-accuracy  # IGDB join vs the Wikidata crosswalk
@@ -157,7 +157,7 @@ Behind a restrictive network, route through a proxy. PlayStation and Metacritic 
 directly; HowLongToBeat and IGDB need it:
 
 ```bash
-python crawler/main.py --once --proxy http://127.0.0.1:2080
+python crawler/main.py --proxy http://127.0.0.1:2080
 ```
 
 ## Data sources

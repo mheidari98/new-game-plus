@@ -1,24 +1,17 @@
 """Metacritic critic scores. One request per game.
 
-The metascore is inline in the search response, so fetching the per-game page
-would buy only the user score and the review count at double the request
-budget. It is not fetched, which means the review *count* is unknown --
-`components.quality` shrinks an unknown-depth score against a fixed
-conservative weight rather than pretending it is deep.
+The metascore is inline in the search response, so the per-game page is never
+fetched -- it would only add the user score and the review count at double the
+budget. The review *count* is therefore genuinely unknown, and
+`components.quality` treats it as unknown depth rather than inventing one.
 
-Matching is the hard part, not fetching. Measured against the live backend:
+Matching is the hard part. Measured against the live backend: a "(YYYY)"
+suffix is a disambiguator, not part of the title -- "Silent Hill 2" returns
+`Silent Hill 2 (2001)` above the 2024 remake, and left in place that 2001
+reads as a version number and `numbers_compatible` discards *both*.
 
-* **A "(YYYY)" suffix is a disambiguator, not part of the title.** Searching
-  "Silent Hill 2" returns `Silent Hill 2 (2001)` above the 2024 remake. Left
-  in place, that 2001 reads as a version number and `numbers_compatible`
-  discards *both* candidates.
-* **Numbering must agree.** Mandatory for every fuzzy match in this project.
-* **Platform and year break the remaining ties**, in that order of cheapness:
-  our catalogue is PS4/PS5 only, so a PS2-only entry is almost never the row
-  we are pricing.
-
-Metacritic 403s on the literal User-Agent `Python-urllib/3.11` and on nothing
-else; `net.HttpClient` sends a real one, so there is nothing to do here.
+Metacritic 403s on the literal User-Agent `Python-urllib/3.11` and nothing
+else; `net.HttpClient` sends a real one.
 """
 
 from __future__ import annotations
@@ -91,27 +84,29 @@ class Metacritic:
             if confidence < MIN_CONFIDENCE:
                 continue
             year = item.get("premiereYear") or suffix_year
-            scored.append((confidence + _bonus(item, year, release_year),
-                           confidence, title, year, score, item.get("slug")))
+            scored.append((confidence + _bonus(item, year, release_year), Critic(
+                score=float(score),
+                title=title,
+                year=year,
+                confidence=confidence,
+                url=f"https://www.metacritic.com/game/{item.get('slug')}/",
+            )))
 
         if not scored:
             return None
-        _, confidence, title, year, score, slug = max(scored)
-        return Critic(
-            score=float(score),
-            title=title,
-            year=year,
-            confidence=confidence,
-            url=f"https://www.metacritic.com/game/{slug}/",
-        )
+        # Rank on the adjusted confidence alone: a tie used to fall through to
+        # year, which is None for entries with neither a premiereYear nor a
+        # suffix, and TypeError'd against an int year.
+        return max(scored, key=lambda s: s[0])[1]
 
 
 def _bonus(item: dict, year: int | None, release_year: int | None) -> float:
     """Tie-breaks, worth less than the title similarity they adjust.
 
-    Store release dates are re-release dates for remasters, so the year is a
-    nudge rather than a filter -- but it is the stronger of the two, because
-    the platform hint alone cannot separate two PS5 entries.
+    Our catalogue is PS4/PS5 only, so a PS2-only entry is rarely the row we are
+    pricing. Store release dates are *re*-release dates for remasters, so the
+    year is a nudge not a filter -- but the stronger of the two, since platform
+    cannot separate two PS5 entries.
     """
     bonus = 0.0
     platforms = {(p.get("name") or "").lower() for p in item.get("platforms") or []}

@@ -8,7 +8,9 @@ measured live: `/api/bleed` in three chunks, `/api/error` in two, and a
 
 import json
 
-from ngp.hltb import HowLongToBeat
+import pytest
+
+from ngp.hltb import HowLongToBeat, SearchFailed
 
 
 SEARCH_CALL = (
@@ -27,11 +29,13 @@ def home(*srcs):
 class FakeHttp:
     """Serves the homepage, the chunks, the auth init and the search POST."""
 
-    def __init__(self, pages, auth=None, results=None):
+    AUTH = {"token": "T", "hpKey": "hpk", "hpVal": "hpv"}
+
+    def __init__(self, pages, auth=AUTH, results=None, post_errors=()):
         self.pages = pages                 # url suffix -> body text
-        self.auth = auth if auth is not None else {
-            "token": "T", "hpKey": "hpk", "hpVal": "hpv"}
+        self.auth = auth                   # None makes /init fail
         self.results = results if results is not None else {"data": []}
+        self.post_errors = list(post_errors)   # raised by successive POSTs
         self.calls = []
         self.posts = []
 
@@ -61,6 +65,8 @@ class FakeHttp:
     def request(self, method, url, headers=None, body=None):
         self.posts.append({"url": url, "headers": headers,
                            "body": json.loads(body)})
+        if self.post_errors:
+            raise RuntimeError(self.post_errors.pop(0))
         return self._Resp("", self.results)
 
 
@@ -123,7 +129,8 @@ class TestDiscovery:
         hltb, _ = client(pages={"/": home("/c/err.js"), "/c/err.js": ERROR_CALL})
         assert hltb.discover() is None
         assert hltb.available is False
-        assert hltb.lookup("Gang Beasts") is None
+        with pytest.raises(SearchFailed):
+            hltb.lookup("Gang Beasts")     # no endpoint is not "no entry"
 
     def test_an_unreachable_homepage_is_not_an_error(self):
         hltb, _ = client(pages={})
@@ -169,9 +176,30 @@ class TestSearch:
                          results={"data": [game(main=0, plus=0, hundred=0)]})
         assert hltb.lookup("Gang Beasts") is None
 
-    def test_a_failed_auth_init_returns_none_rather_than_raising(self):
+    def test_a_failed_auth_init_is_not_a_cacheable_miss(self):
         hltb, _ = client(pages=DEFAULT_PAGES, auth=None)
-        assert hltb.lookup("Gang Beasts") is None
+        with pytest.raises(SearchFailed):
+            hltb.lookup("Gang Beasts")
+
+    def test_a_failed_search_is_not_a_cacheable_miss(self):
+        # None means "HowLongToBeat has no entry", and that is cached for 180
+        # days. A blip must not buy the same silence.
+        hltb, _ = client(pages=DEFAULT_PAGES, post_errors=["HTTP 502"],
+                         results={"data": [game()]})
+        with pytest.raises(SearchFailed):
+            hltb.lookup("Gang Beasts")
+
+    def test_an_expired_token_is_retried_once_and_still_matches(self):
+        hltb, http = client(pages=DEFAULT_PAGES, post_errors=["HTTP 403"],
+                            results={"data": [game()]})
+        assert hltb.lookup("Gang Beasts").hltb_id == 23050
+        assert len([c for c in http.calls if "/init" in c]) == 2
+
+    def test_a_second_403_gives_up_without_faking_a_miss(self):
+        hltb, _ = client(pages=DEFAULT_PAGES,
+                         post_errors=["HTTP 403", "HTTP 403"])
+        with pytest.raises(SearchFailed):
+            hltb.lookup("Gang Beasts")
 
     def test_strips_edition_noise_before_searching(self):
         hltb, http = client(pages=DEFAULT_PAGES, results={"data": [game()]})

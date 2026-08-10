@@ -1,9 +1,7 @@
-"""PlayStation Plus catalogue feeds.
+"""PlayStation Plus catalogue feeds (AEM endpoint behind the public PS+ page).
 
-The public PS+ page renders client-side from an AEM endpoint. Every entry
-carries a conceptId *and* a productId, so matching against store products is
-exact -- there is no fuzzy title matching anywhere in this path, which is the
-single biggest source of wrong answers avoided.
+Every entry carries a conceptId *and* a productId, so matching against store
+products is exact -- no fuzzy title matching anywhere in this path.
 
 Tier mapping, from the page's own bundle:
   plus-games-list      Extra Game Catalog
@@ -15,8 +13,11 @@ Tier mapping, from the page's own bundle:
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
+
+log = logging.getLogger(__name__)
 
 GAMESLIST_URL = "https://www.playstation.com/bin/imagic/gameslist"
 
@@ -42,8 +43,8 @@ class PlusEntry:
 
     @property
     def in_extra(self) -> bool:
-        """Monthly Essentials are claimable and keepable by every tier, so
-        for ranking purposes they count as already-owned like Extra."""
+        """Monthly Essentials are claimable and keepable by every tier, so they
+        rank as already-owned like Extra."""
         return self.list_name in ("extra", "monthly")
 
     @property
@@ -73,10 +74,9 @@ def parse_feed(payload, list_name) -> list[PlusEntry]:
     return out
 
 
-# The Extra feed 404s intermittently: it went down on one US-runner crawl and
-# answered with 471 entries minutes later. net.py cannot retry this for us --
-# a 404 anywhere else is a real absence, not a blip -- and losing it costs the
-# whole run, so it is asked again here before the crawl is abandoned.
+# The Extra feed 404s intermittently -- it went down on one US-runner crawl and
+# answered with 471 entries minutes later -- so it is retried here. net.py
+# cannot: a 404 anywhere else is a real absence, not a blip.
 EXTRA_ATTEMPTS = 4
 EXTRA_BACKOFF_SECONDS = 20
 
@@ -84,9 +84,8 @@ EXTRA_BACKOFF_SECONDS = 20
 def fetch_all(http, locale="en-us", sleep=time.sleep) -> dict[str, list[PlusEntry]]:
     """One request per list -- the endpoint ignores every batching attempt.
 
-    Raises if the Extra catalogue cannot be read. A silent empty list would
-    mark the entire store as not-in-PS+, which is a wrong answer everywhere
-    and worse than no answer.
+    Raises if Extra cannot be read: an empty Extra marks the entire store as
+    not-in-PS+, which is worse than no answer.
     """
     def fetch(category):
         return http.get_json(
@@ -99,8 +98,11 @@ def fetch_all(http, locale="en-us", sleep=time.sleep) -> dict[str, list[PlusEntr
         if key != "extra":
             try:
                 out[key] = parse_feed(fetch(category), key)
-            except Exception:
-                out[key] = []       # Classics and Monthly are nice to have
+            except Exception as exc:
+                # Nice to have, so no raise -- but an empty catalogue publishes
+                # every game as not-in-it, which is a confident wrong answer.
+                log.warning("ps+ %s list unreadable, publishing it empty: %s", key, exc)
+                out[key] = []
             continue
 
         problem = "came back empty"
@@ -146,6 +148,11 @@ class PlusIndex:
         if product_id:
             return self._by_product.get(product_id)
         return None
+
+    @property
+    def extra_count(self) -> int:
+        """Concepts with at least one Extra (or Monthly) entry."""
+        return sum(any(e.in_extra for e in v) for v in self._by_concept.values())
 
     def __len__(self):
         return len(self._by_concept)

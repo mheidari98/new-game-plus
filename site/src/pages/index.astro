@@ -1,11 +1,14 @@
 ---
 import Base from '../layouts/Base.astro';
-import { decode, price } from '../lib/index';
+import { artUrl, decode, price } from '../lib/index';
 import { gameUrl } from '../lib/detail';
 import raw from '../../public/index.json';
+import art from '../art.json';
 
 const { meta, rows } = decode(raw);
 const base = import.meta.env.BASE_URL;
+// Row order is popularity order, and it decides which games have a
+// prerendered page, so the rank is taken before any sorting.
 const rankOf = new Map(rows.map((r, i) => [r.id, i]));
 
 const free = rows.filter((r) => r.is_free || r.price_cents === 0)
@@ -34,6 +37,10 @@ const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
     <ul class="grid">
       {free.map((g) => (
         <li class="card">
+          {artUrl(art[g.id], 200) && (
+            <img class="cardart" src={artUrl(art[g.id], 200)} alt="" width="236" height="236"
+                 loading="lazy" decoding="async" />
+          )}
           <a href={gameUrl(base, g.id, rankOf.get(g.id)!)}>{g.name}</a>
           <span class="meta">
             <span class="free">Free</span>
@@ -86,17 +93,14 @@ const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
   <style>
     section { margin: 2.5rem 0; }
     h2 { font-size: 1.3rem; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
-    .note { color: var(--muted); font-size: 0.95rem; }
     .grid { list-style: none; padding: 0; display: grid; gap: 0.6rem;
             grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); margin-top: 1rem; }
     .card { background: var(--card); border: 1px solid var(--line);
             border-radius: 8px; padding: 0.75rem 0.9rem; }
-    .card a, .rows a { color: inherit; text-decoration: none; font-weight: 600; }
-    .card a:hover, .rows a:hover { color: var(--accent); text-decoration: underline; }
-    .meta { display: block; color: var(--muted); font-size: 0.85rem; margin-top: 0.2rem; }
-    .free { color: var(--free); font-weight: 600; }
-    .rows { padding-left: 1.2rem; }
+    .card a { color: inherit; text-decoration: none; font-weight: 600; }
+    .card a:hover { color: var(--accent); text-decoration: underline; }
+    /* Tighter than the shared rules, on this page only. */
+    .meta { margin-top: 0.2rem; }
     .rows li { margin: 0.5rem 0; }
-    s { opacity: 0.6; }
   </style>
 </Base>

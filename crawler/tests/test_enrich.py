@@ -6,8 +6,11 @@ same time instead of taking turns. The budget rules below are the part that
 went wrong in production and are worth pinning.
 """
 
+import pytest
+
 from main import _enrich
 from ngp.cache import Cache
+from ngp.ratelimit import RateLimitExceeded
 
 
 class FakeStore:
@@ -124,3 +127,82 @@ class TestOneTaskTouchesBothHosts:
         rows = seed(cache, 2)
         ok, fail, _, _ = _enrich(Broken(), mc, cache, rows, Args(), workers=1)
         assert (ok, fail) == (0, 2)
+
+
+class TestTheCircuitBreakerIsNotSwallowed:
+    """RateLimitExceeded means the refusals stopped looking like throttling.
+    Enrichment is ~12,000 requests -- the phase most likely to draw a block --
+    so a per-row `except Exception` here would swallow it for the whole run.
+    """
+
+    def test_a_blocked_store_stops_the_run(self):
+        class Blocked(FakeStore):
+            def product(self, pid):
+                raise RateLimitExceeded("6.00 req/s refused 5 times in a row")
+
+        cache = Cache()
+        rows = seed(cache, 3)
+        with pytest.raises(RateLimitExceeded):
+            _enrich(Blocked(), FakeMetacritic(), cache, rows, Args(), workers=1)
+
+    def test_a_blocked_metacritic_stops_the_run(self):
+        class Blocked(FakeMetacritic):
+            def lookup(self, name, release_year=None):
+                raise RateLimitExceeded("6.00 req/s refused 5 times in a row")
+
+        cache = Cache()
+        rows = seed(cache, 3)
+        with pytest.raises(RateLimitExceeded):
+            _enrich(FakeStore(), Blocked(), cache, rows, Args(), workers=1)
+
+    def test_an_ordinary_transport_error_is_still_only_one_row(self):
+        class Flaky(FakeMetacritic):
+            def lookup(self, name, release_year=None):
+                raise RuntimeError("HTTP 502")
+
+        cache = Cache()
+        rows = seed(cache, 2)
+        ok, fail, matched, _ = _enrich(FakeStore(), Flaky(), cache, rows, Args(), workers=1)
+        assert (ok, fail, matched) == (2, 0, 0)
+
+
+class TestCoverArt:
+    """Sony ships several image roles per product and no literal "box art" key.
+
+    MASTER was the only role present on all 18 products sampled across the
+    popularity range, so it leads the chain. The URL carries a 48-hex asset
+    hash and cannot be derived from a product id -- it is captured here or the
+    game has no image at all.
+    """
+
+    def media(self, *roles):
+        return [{"type": "IMAGE", "role": r, "url": f"https://img/{r}.png"}
+                for r in roles]
+
+    def enrich_one(self, media):
+        cache, mc = Cache(), FakeMetacritic(score=None)
+        rows = seed(cache, 1)
+        store = FakeStore()
+        base = store.product
+        store.product = lambda pid: {**base(pid), "media": media}
+        _enrich(store, mc, cache, rows, Args, workers=1)
+        return cache.get("product", "0", ttl_days=30)["art"]
+
+    def test_prefers_master(self):
+        assert self.enrich_one(
+            self.media("LOGO", "PORTRAIT_BANNER", "MASTER")) == "https://img/MASTER.png"
+
+    def test_falls_back_when_master_is_absent(self):
+        assert self.enrich_one(
+            self.media("SCREENSHOT", "GAMEHUB_COVER_ART")) == "https://img/GAMEHUB_COVER_ART.png"
+
+    def test_never_picks_a_logo_or_screenshot(self):
+        # Both are present on nearly every product and neither is box art.
+        assert self.enrich_one(self.media("LOGO", "SCREENSHOT")) is None
+
+    def test_a_product_with_no_media_is_null_not_missing(self):
+        assert self.enrich_one([]) is None
+
+    def test_video_entries_are_ignored(self):
+        media = [{"type": "VIDEO", "role": "MASTER", "url": "https://img/clip.mp4"}]
+        assert self.enrich_one(media) is None

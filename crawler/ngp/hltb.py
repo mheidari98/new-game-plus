@@ -1,26 +1,26 @@
 """HowLongToBeat playtime. Best-effort, and never able to fail a run.
 
-The endpoint moves every two or three months, so nothing about it is pinned.
-Each run reads the homepage, fetches every chunk it links, and finds the
-search call **by its shape** rather than by its path.
+The endpoint moves every two or three months, so nothing is pinned. Each run
+reads the homepage, fetches every chunk it links and finds the search call **by
+its shape**: it is the only fetch sending `x-auth-token`. Never by picking the
+most common `/api/…` string -- measured live, the chunks hold `/api/bleed`
+three times and `/api/error` twice, and `_buildManifest.js` lists thirty more
+routes including `/api/admin/panel`, so frequency would eventually post our
+searches at an error-reporting endpoint. Two chunks agreeing is a consistency
+check, not the selection rule.
 
-Shape, not frequency, and the difference matters. Measured live today: the
-chunks contain `/api/bleed` three times and `/api/error` twice, and
-`_buildManifest.js` lists thirty more routes including `/api/admin/panel`.
-Picking the most common `/api/…` string would eventually post searches at an
-error-reporting endpoint. The search call is the only one that sends
-`x-auth-token`, so that header is what the pattern anchors on. Two chunks
-agreeing on the same path is a consistency check, not the selection rule.
-
-The token is not scraped out of the bundle either -- `GET <endpoint>/init`
-returns a `{token, hpKey, hpVal}` triple, sent as three headers *and*
-injected into the request body under the dynamic `hpKey`. A 403 means it
-expired: re-init once and retry, which is what the site itself does.
+The token is not scraped from the bundle either: `GET <endpoint>/init` returns
+`{token, hpKey, hpVal}`, sent as three headers *and* injected into the request
+body under the dynamic `hpKey`. A 403 means it expired -- re-init once and
+retry, as the site itself does.
 
 `howlongtobeat.com/robots.txt` disallows `/api` for every user-agent and Ziff
-Davis's terms prohibit automated retrieval. That was reviewed and accepted.
-What it means for this file is that playtime is a nullable column with a
-180-day TTL, and every failure path here returns None.
+Davis's terms prohibit automated retrieval. That was reviewed and accepted:
+playtime is a nullable column with a 180-day TTL.
+
+At that TTL a miss is cached like a hit, so "searched, nothing matched" (None)
+and "could not search" (`SearchFailed`) must not look alike -- one blip would
+otherwise cost a game its playtime for half a year.
 """
 
 from __future__ import annotations
@@ -55,6 +55,13 @@ _SEARCH_CALL = re.compile(
     re.S)
 
 MIN_CONFIDENCE = 0.72
+
+
+class SearchFailed(Exception):
+    """The search never ran: no endpoint, no auth, or the POST failed.
+
+    Not an answer, so the caller must not cache it as a miss.
+    """
 
 
 @dataclass(frozen=True)
@@ -129,11 +136,11 @@ class HowLongToBeat:
 
     # -- search -------------------------------------------------------------
 
-    def _post(self, terms: list[str]) -> dict | None:
+    def _post(self, terms: list[str]) -> dict:
         auth = self._auth or self._init_auth()
-        if not auth:
-            return None
         for attempt in (1, 2):
+            if not auth:
+                raise SearchFailed(f"no auth token for {terms!r}")
             key, value = auth.get("hpKey"), auth.get("hpVal")
             payload = _search_payload(terms)
             if key:
@@ -145,28 +152,28 @@ class HowLongToBeat:
                              "x-auth-token": auth.get("token") or "",
                              "x-hp-key": key or "", "x-hp-val": value or ""},
                     body=json.dumps(payload).encode())
-                return response.json()
+                return response.json() or {}
             except Exception as exc:
                 # The site treats 403 as "your token expired": it re-inits and
                 # retries once, so we do the same rather than dropping the row.
                 if attempt == 1 and "403" in str(exc):
                     auth = self._init_auth()
-                    if auth:
-                        continue
-                log.debug("hltb search failed for %r: %s", terms, exc)
-                return None
-        return None
+                    continue
+                raise SearchFailed(f"{terms!r}: {exc}") from exc
 
     def lookup(self, name: str | None, release_year: int | None = None) -> Playtime | None:
+        """The match, or None when the search ran and nothing matched.
+
+        Raises `SearchFailed` when it could not run; only None is cacheable.
+        """
         query = normalize_title(name or "")
-        if not query or not self.available:
+        if not query:
             return None
-        payload = self._post(query.split())
-        if not payload:
-            return None
+        if not self.available:
+            raise SearchFailed("no search endpoint this run")
 
         best, best_rank = None, 0.0
-        for entry in payload.get("data") or []:
+        for entry in self._post(query.split()).get("data") or []:
             title, suffix_year = split_year(entry.get("game_name") or "")
             if not numbers_compatible(query, title):
                 continue

@@ -38,5 +38,5 @@ to end, which is the thing the per-host limiters exist to avoid.
 `metGetConceptById` is redundant — `metGetProductById` returns the same fields plus the concept
 id. Two operations per product, not three.
 
-Prefer `python crawler/main.py --once --limit 25 -v` while iterating. A full crawl is ~7,000
+Prefer `python crawler/main.py --limit 25 -v` while iterating. A full crawl is ~7,000
 requests against a live third-party API.

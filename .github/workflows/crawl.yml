@@ -78,7 +78,7 @@ jobs:
       # this warms over several days rather than in one long job.
       - name: Crawl
         run: |
-          python crawler/main.py --once \
+          python crawler/main.py \
             ${{ github.event.inputs.backfill == 'false' && ' ' || '--backfill' }} \
             --cap '${{ github.event.inputs.cap || 5000 }}' -v
 

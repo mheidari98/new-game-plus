@@ -13,7 +13,7 @@ make crawl      # live crawl, hits the real store
 make site       # build the static site
 ```
 
-Run `make test` before committing. `python crawler/main.py --once --limit 25 -v` is the fast way
+Run `make test` before committing. `python crawler/main.py --limit 25 -v` is the fast way
 to exercise the live path without a full crawl.
 
 ## Enforced invariants
@@ -95,7 +95,16 @@ These cost real debugging time. None are obvious from reading the code.
   (`0-0`) is a subset of "Under $1.99" (`0-199`), so the sweep dedupes by concept id.
 - Astro's `base` has no trailing slash, so `${BASE_URL}index.json` renders as
   `/repoindex.json`. `astro.config.mjs` normalises it.
-- Cover art is not published in `index.json` — it was 27% of the payload.
+- Cover art is not published in `index.json` — a URL costs 34.6 B gzipped per row that gzip
+  cannot shrink (the asset hash is random), which is 428 KB over the full catalogue. It is
+  cached by the crawler and written to `site/src/art.json`, which sits outside `public/` so it
+  is build input only; the static pages bake in the `<img>` and no browser downloads it.
+- Sony ships several image roles and no literal "box art" key. `MASTER` was the only role
+  present on all 18 products sampled across the popularity range, so it leads `ART_ROLES`;
+  `LOGO` and `SCREENSHOT` are never box art. The URL carries an asset hash and cannot be
+  derived from a product id.
+- The image CDN resizes on request — `?w=200` turns a 403,800 B asset into 12,679 B, and it
+  works on the legacy `cdn/…` and `gs2-sec/…` URL forms too. Always ask for the rendered size.
 
 ## Conventions
 

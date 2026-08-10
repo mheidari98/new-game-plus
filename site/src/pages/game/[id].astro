@@ -3,6 +3,7 @@ import Base from '../../layouts/Base.astro';
 import { decode } from '../../lib/index';
 import { detailHtml, PRERENDERED } from '../../lib/detail';
 import raw from '../../../public/index.json';
+import art from '../../art.json';
 
 // The most popular games get a real page; the tail is rendered by
 // game/index.astro from the index the browser already has. Index order is
@@ -16,7 +17,8 @@ export function getStaticPaths() {
 }
 
 const { game } = Astro.props;
-const body = detailHtml(game, new Date().getFullYear());
+// Art is build input only, so it never reaches a browser as JSON.
+const body = detailHtml(game, new Date().getFullYear(), art[game.id] ?? null);
 ---
 <Base title={`${game.name} — new-game-plus`}
       tagline={`Price, PS+ status and ranking components for ${game.name}.`}>

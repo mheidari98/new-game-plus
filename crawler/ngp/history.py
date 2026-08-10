@@ -1,19 +1,15 @@
 """Append-only price history, partitioned by month.
 
-This is the only thing in the project that accumulates. Everything else is
-re-fetched every run, so a bug anywhere else costs a re-crawl; a bug here
-loses data that cannot be recovered. Wayback cannot bootstrap it either --
-measured median of 2 captures per product across its entire lifetime.
+The only thing here that accumulates: a bug elsewhere costs a re-crawl, a bug
+here loses data permanently. Wayback cannot bootstrap it -- measured median of
+2 captures per product across its whole lifetime.
 
-Two decisions are structural rather than stylistic:
-
-* **Rows are written only when a price moves.** Writing every price every day
-  is ~4,300 rows of which ~900 carry information.
-* **One file per month.** A single append-only file re-stores the whole blob
-  in every commit -- about 1.8 GB of git objects in year one -- and a file per
-  day would hit the 3,000-entries-per-directory limit in year nine.
-
-The month is in the path, so a row carries only the day of the month.
+Rows are written only when a price moves: writing every price every day is
+~4,300 rows of which ~900 carry information. One file per month, because a
+single append-only file re-stores the whole blob in every commit (~1.8 GB of
+git objects in year one) and a file per day would hit the 3,000-entries-per-
+directory limit in year nine. The month is in the path, so a row carries only
+the day.
 
     python crawler/ngp/history.py --report          # what we actually have
 """
@@ -44,8 +40,8 @@ def month_path(root, when: date) -> Path:
 def load(root) -> dict[str, list[Observation]]:
     """Every observation, keyed by product id, oldest first.
 
-    A missing directory is an empty history, not an error: that is a fresh
-    clone, or the first run before the data branch exists.
+    A missing directory is an empty history, not an error: fresh clone, or a
+    first run before the data branch exists.
     """
     series: dict[str, list[Observation]] = {}
     prices = Path(root) / "prices"
@@ -90,21 +86,15 @@ def _write(root, changed, when: date) -> None:
 
 def append_changes(root, priced, when: date) -> int:
     """Append the prices that moved. Returns the number of rows written."""
-    changed = _changes(load(root), priced)
-    if changed:
-        _write(root, changed, when)
-    return len(changed)
+    return record(root, priced, when)[1]
 
 
 def record(root, priced, when: date) -> tuple[dict[str, list[Observation]], int]:
     """Append today's changes and return the whole history *including* them.
 
-    Callers want both, and computing "did this price move?" in one place is
-    what stops the stored file and the scored series disagreeing.
-
-    Today counts toward the history it is scored against: "the lowest price we
-    have ever recorded" has to include the price on offer right now, or a
-    genuine all-time low would score as though it were ordinary.
+    Deciding "did this price move?" in one place is what stops the stored file
+    and the scored series disagreeing. Today counts toward the history it is
+    scored against, or a genuine all-time low would score as ordinary.
     """
     series = load(root)
     changed = _changes(series, priced)
@@ -118,9 +108,8 @@ def record(root, priced, when: date) -> tuple[dict[str, list[Observation]], int]
 def summarise(series, min_observations: int) -> Summary | None:
     """What this history supports saying, or None when it supports nothing.
 
-    Below the floor the caller must drop the history-based score components
-    and renormalise the rest. A confident number from three data points is
-    worse than an honest gap.
+    Below the floor the caller drops the history components and renormalises:
+    a confident number from three data points is worse than an honest gap.
     """
     if not series or len(series) < min_observations:
         return None

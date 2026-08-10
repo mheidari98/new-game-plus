@@ -9,7 +9,7 @@ is their real test.
 
 import pytest
 
-from ngp.igdb import Igdb
+from ngp.igdb import PAGE, Igdb
 
 
 class FakeHttp:
@@ -137,6 +137,36 @@ class TestUidShape:
         index, shape = igdb.psn_index(36)
         assert shape is None
         assert index == {"spider-man-2": 7}
+
+
+class TestPsnIndex:
+    def test_a_failed_page_drops_the_index_rather_than_truncating_it(self):
+        # The index is ~26 pages. Half an index is indistinguishable from a
+        # small catalogue, so the caller would write "no split-screen" for
+        # everything past the failure and cache it for 90 days.
+        def pages(http):
+            if "offset 0;" in http.calls[-1]["body"]:
+                return [{"game": i, "uid": str(10_000_000 + i)}
+                        for i in range(1, PAGE + 1)]
+            raise RuntimeError("HTTP 503")
+
+        igdb, _ = client(responses={"/oauth2/token": TOKEN,
+                                    "/external_games": pages})
+        assert igdb.psn_index(36) == ({}, None)
+
+    def test_pages_until_a_short_page(self):
+        def pages(http):
+            if "offset 0;" in http.calls[-1]["body"]:
+                return [{"game": i, "uid": str(10_000_000 + i)}
+                        for i in range(1, PAGE + 1)]
+            return [{"game": 99, "uid": "10009999"}]
+
+        igdb, http = client(responses={"/oauth2/token": TOKEN,
+                                       "/external_games": pages})
+        index, shape = igdb.psn_index(36)
+        assert len(index) == PAGE + 1
+        assert shape == "concept_id"
+        assert sum("external_games" in c["url"] for c in http.calls) == 2
 
 
 class TestEditorial:

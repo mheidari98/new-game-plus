@@ -1,8 +1,8 @@
 /** Decode the columnar index.json back into row objects.
  *
- * The payload is columnar with integer dictionaries because at 12k games a
- * row-of-objects layout is 1.67 MB gzipped and blows the budget, while this
- * is 440 KB. Decoding is one pass and costs a few ms.
+ * Columnar with integer dictionaries because at 12k games a row-of-objects
+ * layout is 1.67 MB gzipped and blows the budget; this is 440 KB. Decoding is
+ * one pass and costs a few ms.
  */
 import type { Game, Weights } from './score';
 
@@ -17,7 +17,6 @@ export interface Row extends Game {
   local_players: number | null;
   psvr2: string | null;
   dualsense: boolean;
-  tier: string | null;
   /** Metascore, or null when nothing matched. Published so the quality
    *  component can be checked against its source by hand. */
   critic_score: number | null;
@@ -66,7 +65,6 @@ export function decode(payload: any): Index {
       platforms: (cols.platforms[i] ?? []).map((p: number) => dicts.platforms[p]),
       esrb: lookup('esrb', cols.esrb[i]),
       psvr2: lookup('psvr2', cols.psvr2[i]),
-      tier: lookup('tier', cols.tier[i]),
       evidence: lookup('evidence', cols.evidence[i]) ?? 'none',
     });
   }
@@ -78,3 +76,48 @@ export const price = (cents: number) =>
 
 export const storeUrl = (id: string) =>
   `https://store.playstation.com/en-us/product/${id}`;
+
+/** Escape before interpolating store text into HTML. Not optional: of 2,369
+ *  live rows, 310 names contain '&', 111 an apostrophe and 5 a double quote
+ *  (e.g. '"Edna & Harvey" Bundle'). */
+export const esc = (s: unknown) =>
+  String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+
+/** The store publishes both ESRB_MATURE (349 rows) and ESRB_MATURE_17 (126)
+ *  for the same rating. Unknown codes -- the store also emits dual ratings like
+ *  ESRB_E_T on bundles -- fall through to the raw code, minus its prefix. */
+const ESRB: Record<string, string> = {
+  ESRB_EVERYONE: 'Everyone',
+  ESRB_EVERYONE_10: 'Everyone 10+',
+  ESRB_TEEN: 'Teen',
+  ESRB_MATURE: 'Mature 17+',
+  ESRB_MATURE_17: 'Mature 17+',
+  ESRB_RATING_PENDING: 'Rating pending',
+};
+
+export const esrbLabel = (esrb: string | null): string | null =>
+  esrb ? (ESRB[esrb] ?? esrb.replace('ESRB_', '').replaceAll('_', ' ')) : null;
+
+/** Sony's CDN resizes on request, so always ask for the size actually rendered:
+ *  the raw asset is ~400 KB, `?w=200` is 12.7 KB. MASTER art is square at every
+ *  width, so one dimension is enough. Null art means the crawl has not reached
+ *  that game yet, and the caller renders no image rather than a placeholder. */
+export const artUrl = (url: string | null | undefined, width: number) =>
+  url ? `${url}?w=${width}` : null;
+
+/** Fetch and decode the payload an island points at. Every island used to
+ *  hand-roll this without a catch, so a failed fetch left "Loading…" up
+ *  forever. Returns null once the element says so. */
+export async function loadIndex(el: HTMLElement): Promise<Index | null> {
+  try {
+    const res = await fetch(el.dataset.src!);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return decode(await res.json());
+  } catch (err) {
+    el.innerHTML = `<p class="note">Could not load the catalogue (${esc(
+      err instanceof Error ? err.message : err,
+    )}). Reload to try again.</p>`;
+    return null;
+  }
+}

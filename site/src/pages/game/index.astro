@@ -9,7 +9,7 @@ const base = import.meta.env.BASE_URL;
   </article>
 
   <script>
-    import { decode } from '../../lib/index';
+    import { loadIndex } from '../../lib/index';
     import { detailHtml } from '../../lib/detail';
 
     // The long tail: everything past the prerendered pages renders here from
@@ -21,15 +21,15 @@ const base = import.meta.env.BASE_URL;
     if (!id) {
       app.innerHTML = '<p class="note">No game selected.</p>';
     } else {
-      const { rows } = decode(await (await fetch(app.dataset.src!)).json());
-      const game = rows.find((r) => r.id === id);
-      if (!game) {
+      const index = await loadIndex(app);
+      const game = index?.rows.find((r) => r.id === id);
+      if (game) {
+        app.innerHTML = detailHtml(game, new Date().getFullYear());
+        document.title = `${game.name} — new-game-plus`;
+      } else if (index) {
         app.innerHTML =
           '<p class="note">That game is not in the current index. It may have left the ' +
           'store, or the crawl has not reached it yet.</p>';
-      } else {
-        app.innerHTML = detailHtml(game, new Date().getFullYear());
-        document.title = `${game.name} — new-game-plus`;
       }
     }
   </script>
