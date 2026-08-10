@@ -95,9 +95,13 @@ Three things were wrong with that, and none of them was the request count:
    limiter, so it now runs in a thread beside the store passes and its 8 minutes vanish inside
    theirs.
 
+Measured after: **55.6 min → 18.4 min**, and effective throughput 4.5 → 9.3 requests/second.
+
 The ceiling was raised from 6 to **12 req/s per host** on evidence rather than optimism: two
 production runs totalling ~20,000 requests both settled at exactly 6.00 with **zero refusals**,
-which means 6 was a cap we chose, not a wall the store pushed back with. Finding the real one is
+which means 6 was a cap we chose, not a wall the store pushed back with. At 12 both hosts again
+settled at exactly 12.00 with zero refusals, so the store's real limit is *still* above what we
+ask of it. The binding constraint now is the worker pool, not the store. Finding the real one is
 what the AIMD limiter is for — the first 429 or 403 halves the rate and pins the ceiling at 0.9×
 the refused rate for the rest of the run, so overshooting costs a handful of refusals rather than
 an IP. Every run prints the rate each host settled at, and the wall if it found one; if a run

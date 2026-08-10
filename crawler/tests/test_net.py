@@ -264,6 +264,33 @@ class TestWorkerSizing:
         assert workers_for(1000.0) == 16
 
 
+class TestStatsUnderConcurrency:
+    """`stats['requests'] += 1` is a read-modify-write, and the pool is 15
+    threads wide. A live run reported 10,309 requests where it had made about
+    15,050 -- a third of them lost. Under-reporting load is the wrong
+    direction to be wrong in for a crawler whose whole safety argument rests
+    on knowing how hard it is pushing a third party."""
+
+    def test_every_request_is_counted(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        c = HttpClient(limiter=AdaptiveLimiter(start=1e6, ceiling=1e6, jitter=0.0, sleep=lambda s: None),
+                       transport=FakeTransport(), sleep=lambda s: None)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda i: c.get(f"https://example.test/{i}"), range(2000)))
+        assert c.stats["requests"] == 2000
+
+    def test_the_per_host_limiter_agrees_with_the_client(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        limiter = AdaptiveLimiter(start=1e6, ceiling=1e6, jitter=0.0, sleep=lambda s: None)
+        c = HttpClient(limiter=AdaptiveLimiter(), limiters={"example.test": limiter},
+                       transport=FakeTransport(), sleep=lambda s: None)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda i: c.get(f"https://example.test/{i}"), range(2000)))
+        assert limiter.requests == c.stats["requests"] == 2000
+
+
 class TestProxy:
     def test_no_proxy_by_default(self):
         t = FakeTransport(ok())

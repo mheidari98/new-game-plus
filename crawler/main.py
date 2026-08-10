@@ -355,12 +355,14 @@ def _enrich(store, metacritic, cache, rows, args, workers):
     due_detail = cache.due("product", ttl_days=args.ttl, limit=limit)
     due_critic = cache.due("critic", ttl_days=args.critic_ttl, limit=limit)
     detail_set, critic_set = set(due_detail), set(due_critic)
-    # The two TTLs are 30 and 14 days, so the due lists diverge and their union
-    # can reach twice the cap. Cap the union, popularity-first, and let the
-    # cursor carry the rest to the next run -- that is what it is for.
+    # Each source is capped on its own, and the union is NOT capped again.
+    # Capping the union lets the cheap source crowd out the expensive one: a
+    # live run spent its whole budget on 5,000 Metacritic lookups and got
+    # through only 2,629 store details. Since each task does only the work
+    # that concept is actually due for, the uncapped union costs exactly what
+    # the two separate passes used to -- at most `limit` of each.
     todo = sorted(detail_set | critic_set,
-                  key=lambda cid: rows[cid]["rank"] if cid in rows else CATALOGUE_RANK_BASE
-                  )[:limit]
+                  key=lambda cid: rows[cid]["rank"] if cid in rows else CATALOGUE_RANK_BASE)
     log.info("enriching %d concepts of %d (%d need detail, %d need a critic score)",
              len(todo), len(rows), len(due_detail), len(due_critic))
 
