@@ -123,6 +123,36 @@ class TestPayloadCache:
         assert cache.get("product", "C0", ttl_days=30) == {"n": 2}
 
 
+class TestThreadSafety:
+    """One connection is shared across worker threads. sqlite3 serialises
+    statements but NOT transactions, so concurrent writes raise "cannot start
+    a transaction within a transaction" and silently lose rows. Observed live
+    with 5 workers before the lock existed."""
+
+    def test_concurrent_writes_do_not_lose_rows(self, cache):
+        from concurrent.futures import ThreadPoolExecutor
+
+        ids = [f"C{i}" for i in range(200)]
+        cache.upsert_concepts([{"concept_id": c, "rank": i, "product_id": f"P{i}"}
+                               for i, c in enumerate(ids)])
+
+        def write(cid):
+            cache.put("product", cid, {"name": cid})
+            cache.mark("product", cid)
+
+        errors = []
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for f in [pool.submit(write, c) for c in ids]:
+                try:
+                    f.result()
+                except Exception as exc:      # noqa: BLE001 - recording, not hiding
+                    errors.append(exc)
+
+        assert not errors, f"concurrent writes raised: {errors[:3]}"
+        assert cache.due("product", ttl_days=30) == []
+        assert all(cache.get("product", c, ttl_days=30) for c in ids)
+
+
 class TestPersistence:
     def test_survives_reopening_the_file(self, tmp_path, clock):
         path = tmp_path / "ngp.sqlite"

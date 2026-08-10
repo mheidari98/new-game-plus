@@ -1,0 +1,25 @@
+{
+  "_comment": "Category UUIDs read from public browse pages, not guessed. Keyed by UUID because slug is NOT unique - two different ids both carry cat.gma.PS5_Pro_Enhanced_Games. This list is a checked-in artifact: re-running the discovery does not reproduce it, because the browse pages are dynamically merchandised.",
+
+  "deals": "3f772501-f6f8-49b7-abac-874a88ca4897",
+  "all_games": "28c9c2b2-cecc-415c-9a08-482a605cb104",
+  "all_ps5_games": "d0446d4b-dc9a-4f1e-86ec-651f099c9b29",
+  "all_ps4_games": "30e3fe35-8f2d-4496-95bc-844f56952e3c",
+  "free_to_play": "4dfd67ab-4ed7-40b0-a937-a549aece13d0",
+  "psvr2": "7b0ad209-dadd-4575-9e51-09ccc803deeb",
+
+  "_grid_kind": {
+    "_comment": "PS5 and PS4 are asymmetric and code must handle both shapes.",
+    "concept": ["all_games", "all_ps5_games", "free_to_play", "psvr2"],
+    "product": ["deals", "all_ps4_games"]
+  },
+
+  "_measured_2026_08_10": {
+    "deals": 4337,
+    "all_games": "reports 10000 (clamped); >=12684 via disjoint price buckets",
+    "all_ps5_games": 6987,
+    "all_ps4_games": "reports 10000 (clamped); 10385 via facet sums",
+    "free_to_play": 252,
+    "psvr2": 409
+  }
+}
