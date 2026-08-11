@@ -8,7 +8,7 @@ viewport instead. Stripping the constant URL prefix saves only 0.3%: the 48-hex
 asset hash is irreducible. Int dicts barely help the bytes (gzip already
 back-references the repeats) but make client-side filtering a bitmask compare.
 
-Art URLs go to a separate build-only file -- see `save_art`.
+Art URLs go to separate files -- see `save_art`.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ _SCALARS = [
     # Best-effort third-party columns. Null is the normal state for both.
     "hours_main", "splitscreen",
 ]
-_DICTED = ["genres", "esrb", "platforms", "psvr2", "evidence", "perspective"]
+_DICTED = ["genres", "esrb", "platforms", "psvr2", "evidence"]
 _MULTI = {"genres", "platforms"}      # lists per row; the rest are single values
 
 
@@ -90,46 +90,24 @@ def render(games, weights, generated_at=None) -> tuple[bytes, bytes, dict]:
 
 
 # How many rows get a *served* art manifest. Rows are in popularity order, so
-# the head is what anyone actually browses. Measured: an art URL costs 34.6 B
-# gzipped that gzip cannot shrink (the 48-hex asset hash is random), so the
-# whole catalogue would be 428 KB -- which is why art is not in index.json at
-# all. 2,000 rows is ~69 KB, fetched only when a page wants thumbnails.
+# the head is what anyone actually browses; 2,000 rows is ~69 KB.
 ART_HEAD_ROWS = 2000
 
 
-def save_art_head(path, games) -> tuple[int, int]:
-    """Art URLs for the popular head, served to the browser.
+def save_art(path, games, limit=None) -> tuple[int, int]:
+    """Cover-art URLs keyed by product id. Returns `(rows, gzip_bytes)`.
 
-    Separate from `save_art`, which writes the *build-time* file: pages that
-    render at build time bake in an <img> and cost the client nothing, but the
-    runtime islands (`/explore/`, `/plus/`) have no such luxury and would
-    otherwise show a catalogue of text. This file is fetched after first paint,
-    so it never delays the page.
-
-    Returns `(rows_with_art, gzip_bytes)` so the caller can log both.
+    Without `limit` this is the build-input file outside `public/`, which the
+    static pages read to bake in `<img>` tags at no cost to the client. With
+    `limit` it is the served head slice the explorer fetches after first paint,
+    because a runtime island cannot import a build file.
     """
-    art = {g["id"]: g["art"] for g in games[:ART_HEAD_ROWS] if g.get("art")}
+    art = {g["id"]: g["art"] for g in games[:limit] if g.get("art")}
     body = json.dumps(art, separators=(",", ":"), sort_keys=True).encode()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)
     return len(art), len(gzip.compress(body, 9))
-
-
-def save_art(path, games) -> int:
-    """Cover-art URLs, keyed by product id, for the site build to read.
-
-    Kept out of index.json on measurement: a URL costs 34.6 B gzipped per row
-    that gzip cannot shrink -- the 48-hex asset hash is random -- which is
-    428 KB at the full catalogue and puts the payload over budget. This file
-    is build input only. It is written outside `public/`, so the static pages
-    bake `<img>` tags in at build time and no browser ever downloads it.
-    """
-    art = {g["id"]: g["art"] for g in games if g.get("art")}
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(art, separators=(",", ":"), sort_keys=True))
-    return len(art)
 
 
 def save(path, body: bytes, packed: bytes) -> None:

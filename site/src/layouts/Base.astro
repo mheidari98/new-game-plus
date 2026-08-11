@@ -11,11 +11,6 @@ const base = import.meta.env.BASE_URL;
   <style is:global>
     @import '../styles/tokens.css';
 
-    /* --card and --free were the old names for --surface and --good. Aliased
-       rather than renamed at every call site in one go, so this commit stays
-       reviewable; the aliases go when the last page is ported. */
-    :root { --card: var(--surface); --free: var(--good); }
-
     * { box-sizing: border-box; }
     body {
       margin: 0; background: var(--bg); color: var(--fg);
@@ -32,14 +27,14 @@ const base = import.meta.env.BASE_URL;
     .lede { color: var(--muted); font-size: 1.1rem; max-width: 46rem; }
     footer { border-top: 1px solid var(--line); margin-top: 4rem; padding: 2rem 0; color: var(--muted); font-size: 0.9rem; }
     footer a { color: var(--accent); }
-    code { background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0.1em 0.35em; font-size: 0.9em; }
+    code { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 0.1em 0.35em; font-size: 0.9em; }
 
     /* Shared list and badge styles. Global, not per page: an island builds its
        markup at runtime, and Astro's scoped styles only reach elements it
        rendered itself. Pages override where they deliberately differ. */
     .note { color: var(--muted); font-size: 0.95rem; }
     .loading { color: var(--muted); }
-    .free { color: var(--free); font-weight: 600; }
+    .free { color: var(--good); font-weight: 600; }
     .meta { display: block; color: var(--muted); font-size: 0.85rem; }
     .rows { padding-left: 1.2rem; }
     .rows li { margin: 0.55rem 0; }
@@ -70,7 +65,7 @@ const base = import.meta.env.BASE_URL;
 
     /* Prices, scores, hours and player counts sit in columns, so figures must
        not change width between rows. */
-    .num, table td, table th { font-variant-numeric: tabular-nums; }
+    table td, table th { font-variant-numeric: tabular-nums; }
 
     .theme-toggle {
       margin-left: auto; background: none; border: 1px solid var(--line);
@@ -106,12 +101,11 @@ const base = import.meta.env.BASE_URL;
     .gamepage h2 { font-size: 1.15rem; letter-spacing: -0.02em; margin: 2rem 0 0.5rem; }
     .gamepage .price { font-size: 1.2rem; margin: 0.5rem 0 1.5rem; }
     .gamepage .price s { opacity: 0.6; font-size: 0.9rem; }
-    .gamepage .off { color: var(--free); font-weight: 600; font-size: 0.9rem; }
-    .gamepage .free { color: var(--free); font-weight: 700; }
+    .gamepage .off { color: var(--good); font-weight: 600; font-size: 0.9rem; }
+    .gamepage .free { color: var(--good); font-weight: 700; }
     .gamepage .tag { border: 1px solid var(--line); border-radius: 999px;
                      padding: 0.1em 0.6em; font-size: 0.8rem; margin-left: 0.4rem;
                      white-space: nowrap; }
-    .gamepage .tag.in { border-color: var(--free); color: var(--free); }
     .gamepage .facts { display: grid; gap: 0; margin: 0; }
     .gamepage .fact { display: grid; grid-template-columns: minmax(9rem, 16rem) 1fr;
                       gap: 1rem; padding: 0.45rem 0; border-top: 1px solid var(--line); }

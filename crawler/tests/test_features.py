@@ -78,6 +78,14 @@ class TestLocalPlayers:
         # not be confused with "1 player".
         assert decode_features(SEA_OF_THIEVES).local_players is None
 
+    def test_sentinel_count_is_unknown_not_a_couch(self):
+        # Two live rows publish 99. Observed real values are 1-11, so anything
+        # this large is a missing value wearing a number; treating it as a
+        # player count puts "99-player couch" on the front page.
+        notices = [{"type": "NO_OF_PLAYERS", "value": "99"}]
+        assert decode_features(notices).local_players is None
+        assert decode_features(notices).is_local_multiplayer is False
+
     def test_unknown_player_count_is_not_local_multiplayer(self):
         assert decode_features(SEA_OF_THIEVES).is_local_multiplayer is False
 

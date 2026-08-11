@@ -21,7 +21,6 @@ const game = (over: Partial<Row> = {}): Row => ({
   critic_score: null,
   hours_main: null,
   splitscreen: null,
-  perspective: null,
   vs_historical_min: null,
   vs_typical_sale: null,
   quality: 80,

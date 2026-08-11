@@ -102,7 +102,7 @@ const base = import.meta.env.BASE_URL;
   <script>
     import { artUrl, esc, loadIndex, price } from '../lib/index';
     import { gameUrl } from '../lib/detail';
-    import { applyFilters, coverage, facetCounts } from '../lib/filters';
+    import { applyFilters, facetCounts, playtimeKnown } from '../lib/filters';
     import { finalScore } from '../lib/score';
     import { SORT_LABELS, sortRows } from '../lib/sorting';
     import { DEFAULTS, fromSearch, toSearch, type ExploreState } from '../lib/urlstate';
@@ -140,11 +140,12 @@ const base = import.meta.env.BASE_URL;
       const art: Record<string, string> = {};
 
       let shown = PAGE;
-      let density = (() => {
-        try { return localStorage.getItem('ngp:density') ?? 'comfortable'; } catch { return 'comfortable'; }
-      })();
+      // Validated on read: an unrecognised stored value would otherwise leave
+      // both density buttons unpressed. Same lesson as resolveTheme.
+      let compact = false;
+      try { compact = localStorage.getItem('ngp:density') === 'compact'; } catch { /* private mode */ }
 
-      const hours = coverage(rows, 'hours_main');
+      const knownHours = playtimeKnown(rows);
       // Say what this set actually is. It is the store's deals grid plus the
       // free-to-play category, not the whole catalogue -- a full-price game
       // that is not on sale today was never crawled, so searching for it finds
@@ -155,6 +156,9 @@ const base = import.meta.env.BASE_URL;
       const genres = [...new Set(rows.flatMap((r) => r.genres))].sort();
 
       const COLUMNS = ['name', 'price', 'off', 'score', 'quality', 'players', 'hours'] as const;
+      type WeightKey = 'quality' | 'deal' | 'value';
+      const WEIGHTS = [['quality', 'Game quality'], ['deal', 'Deal depth'],
+                       ['value', 'Value per dollar']] as const;
 
       const FACETS = [
         { key: 'price' as const, label: 'Price',
@@ -179,7 +183,6 @@ const base = import.meta.env.BASE_URL;
         ['sort=hours&dir=asc', 'Shortest first'],
       ];
 
-      app.className = `explore ${density === 'compact' ? 'compact' : ''}`;
       // The search field is rendered ONCE, outside the re-rendered region.
       // renderFacets() rebuilds #facetgroups with innerHTML on every keystroke,
       // and rebuilding the input under the user's cursor destroys the element
@@ -189,8 +192,18 @@ const base = import.meta.env.BASE_URL;
           <label class="fieldlabel" for="q">Search games</label>
           <input type="search" id="q" value="${esc(state.q)}"
                  placeholder="${rows.length.toLocaleString()} on sale or free" />
-          <p class="cover" id="scope"></p>
+          <p class="cover">${onSale.toLocaleString()} games on sale and
+             ${freeCount.toLocaleString()} free-to-play. A game that is not
+             discounted today is not in this list yet.</p>
           <div id="facetgroups"></div>
+          <div class="sliders" id="sliders">
+            <p class="cover" id="slidernote"></p>
+            ${(() => { const w = effective(); return WEIGHTS.map(([key, label]) => `
+              <label>${label} — <span data-weightval="${key}">${Math.round(w[key] * 100)}</span>
+                <input type="range" data-weight="${key}" min="0" max="100"
+                       value="${Math.round(w[key] * 100)}" />
+              </label>`).join(''); })()}
+          </div>
         </aside>
         <div>
           <div class="presets" id="presets"></div>
@@ -214,9 +227,21 @@ const base = import.meta.env.BASE_URL;
 
       const el = (id: string) => document.getElementById(id)!;
 
-      el('scope').textContent =
-        `${onSale.toLocaleString()} games on sale and ${freeCount.toLocaleString()} free-to-play. `
-        + 'A game that is not discounted today is not in this list yet.';
+      const cover = (id: string) => {
+        const url = artUrl(art[id], 72);
+        return url
+          ? `<img class="cover72" src="${esc(url)}" alt="" width="72" height="72"
+                  loading="lazy" decoding="async" />`
+          : '<span class="cover72" aria-hidden="true"></span>';
+      };
+
+      const applyDensity = (choice: string) => {
+        compact = choice === 'compact';
+        app.className = compact ? 'explore compact' : 'explore';
+        for (const b of app.querySelectorAll('[data-density]')) {
+          b.setAttribute('aria-pressed', String((b as HTMLElement).dataset.density === choice));
+        }
+      };
 
       // Safari throws SecurityError above 100 replaceState calls per 30 s and a
       // slider drag fires `input` continuously, so URL writes are throttled.
@@ -243,18 +268,23 @@ const base = import.meta.env.BASE_URL;
         }).join('');
       }
 
+      const radios = (name: string, values: readonly (readonly [string, string])[],
+                      selected: string, counts?: Map<string, number>) =>
+        values.map(([value, label]) => `
+          <label>
+            <input type="radio" name="${name}" value="${esc(value)}"
+                   ${selected === value ? 'checked' : ''} />
+            ${esc(label)}${counts ? `<span class="count">${counts.get(value)!.toLocaleString()}</span>` : ''}
+          </label>`).join('');
+
       // A <summary> is not a label, so the genre select carries its own
       // aria-label -- without it a screen reader announces an unnamed combobox.
       function renderFacets() {
-        const groups = FACETS.map((facet) => {
-          const counts = facetCounts(rows, state, facet.key, facet.values.map(([v]) => v));
-          return `<h2>${esc(facet.label)}</h2>` + facet.values.map(([value, label]) => `
-            <label>
-              <input type="radio" name="${facet.key}" value="${esc(value)}"
-                     ${state[facet.key] === value ? 'checked' : ''} />
-              ${esc(label)}<span class="count">${counts.get(value)!.toLocaleString()}</span>
-            </label>`).join('');
-        }).join('');
+        const groups = FACETS.map((facet) =>
+          `<h2>${esc(facet.label)}</h2>`
+          + radios(facet.key, facet.values, state[facet.key] as string,
+                   facetCounts(rows, state, facet.key, facet.values.map(([v]) => v)))
+        ).join('');
 
         el('facetgroups').innerHTML = `
           ${groups}
@@ -265,31 +295,16 @@ const base = import.meta.env.BASE_URL;
             </select>
           </details>
           <details><summary>Well reviewed</summary>
-            ${[[0, 'Any'], [60, '60 or better'], [75, '75 or better']].map(([v, label]) => `
-              <label><input type="radio" name="minQuality" value="${v}"
-                     ${state.minQuality === v ? 'checked' : ''} /> ${esc(label)}</label>`).join('')}
+            ${radios('minQuality', [['0', 'Any'], ['60', '60 or better'], ['75', '75 or better']],
+                     String(state.minQuality))}
             <p class="cover">Scored from store ratings and, where one exists, a critic score.
-               Playtime is known for only ${hours.known.toLocaleString()} of
-               ${hours.total.toLocaleString()} games, so it is a column you can sort by rather
+               Playtime is known for only ${knownHours.toLocaleString()} of
+               ${rows.length.toLocaleString()} games, so it is a column you can sort by rather
                than a filter.</p>
           </details>
           <details><summary>Age rating</summary>
-            ${ESRB_VALUES.map(([value, label]) => `
-              <label><input type="radio" name="esrb" value="${esc(value)}"
-                     ${state.esrb === value ? 'checked' : ''} /> ${esc(label)}</label>`).join('')}
-          </details>
-          <div class="sliders ${state.sort === 'score' ? '' : 'off'}" id="sliders">
-            <p class="cover">${state.sort === 'score'
-              ? 'These three weights drive the Score column.'
-              : `Sorting by ${esc(SORT_LABELS[state.sort])}, so these are not in use.`}</p>
-            ${(() => { const w = effective(); return ([['quality', 'Game quality'],
-                ['deal', 'Deal depth'], ['value', 'Value per dollar']] as const)
-              .map(([key, label]) => `
-              <label>${label} — ${Math.round(w[key] * 100)}
-                <input type="range" data-weight="${key}" min="0" max="100"
-                       value="${Math.round(w[key] * 100)}" />
-              </label>`).join(''); })()}
-          </div>`;
+            ${radios('esrb', ESRB_VALUES, state.esrb)}
+          </details>`;
       }
 
       function renderChips() {
@@ -312,7 +327,7 @@ const base = import.meta.env.BASE_URL;
           + '<button type="button" data-clear="all">Clear all</button>';
       }
 
-      function render() {
+      function renderRows() {
         // The sliders are the `final` weights, renormalised so they always sum
         // to 1. Everything else in `weights` comes from index.json untouched.
         const w = effective();
@@ -337,20 +352,21 @@ const base = import.meta.env.BASE_URL;
         el('results').innerHTML = page.length === 0
           ? `<tr><td colspan="${COLUMNS.length}" class="note">
                No games match. Try clearing a filter above.</td></tr>`
-          : page.map((g) => `
+          : page.map((g) => {
+            // Hoisted so the template interpolates no raw payload field --
+            // islands.test.ts greps for exactly that, and cover() escapes inside.
+            const art72 = cover(g.id);
+            return `
             <tr>
               <td>
                 <div class="withcover">
-                  ${art[g.id]
-                    ? `<img class="cover72" src="${esc(artUrl(art[g.id], 72))}" alt=""
-                            width="72" height="72" loading="lazy" decoding="async" />`
-                    : '<span class="cover72" aria-hidden="true"></span>'}
+                  ${art72}
                   <span>
                 <a class="title" href="${esc(gameUrl(BASE, g.id, rankOf.get(g.id)!))}">${esc(g.name)}</a>
                 <span class="rowtags">
                   ${g.plus_extra ? '<span class="tag good">PS+ Extra</span>' : ''}
                   ${g.plus_classics ? '<span class="tag good">PS+ Classics</span>' : ''}
-                  ${(g.local_players ?? 0) >= 2 && (g.local_players ?? 0) <= 16
+                  ${(g.local_players ?? 0) >= 2
                     ? `<span class="tag">${g.local_players}-player couch</span>` : ''}
                   ${g.vs_historical_min === 100 ? '<span class="tag good">lowest we have recorded</span>' : ''}
                   ${g.psvr2 ? `<span class="tag">PS VR2 ${esc(g.psvr2)}</span>` : ''}
@@ -365,51 +381,62 @@ const base = import.meta.env.BASE_URL;
               <td class="right">${g.discount_pct > 0 ? `−${g.discount_pct}%` : '—'}</td>
               <td class="right">${Math.round(finalScore(g, live, { hasPlusExtra: state.hasPlus }, YEAR))}</td>
               <td class="right">${Math.round(g.quality)}</td>
-              <td class="right">${(g.local_players ?? 0) > 0 && (g.local_players ?? 0) <= 16 ? g.local_players : '—'}</td>
+              <td class="right">${g.local_players ?? '—'}</td>
               <td class="right">${g.hours_main ? `${g.hours_main}h` : '—'}</td>
-            </tr>`).join('');
+            </tr>`;
+          }).join('');
 
         renderHead();
+        el('sliders').classList.toggle('off', state.sort !== 'score');
+        el('slidernote').textContent = state.sort === 'score'
+          ? 'These three weights drive the Score column.'
+          : `Sorting by ${SORT_LABELS[state.sort]}, so these are not in use.`;
+        syncUrl();
+      }
+
+      /** Facet counts depend only on the filter state -- `matches()` never
+       *  reads the weights -- so a slider drag re-runs rows() alone. Keeping
+       *  the sliders and the search box outside #facetgroups also means neither
+       *  is destroyed under the user's finger mid-gesture. */
+      function render() {
         renderFacets();
         renderChips();
         el('presets').innerHTML = PRESETS.map(([search, label]) => `
           <a href="?${search}"${toSearch(state) === search ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('');
-        syncUrl();
+        renderRows();
       }
 
-      const reset = () => { shown = PAGE; };
+      /** A filter change is a discrete commit, so Back walks to it. */
+      const commit = () => {
+        shown = PAGE;
+        history.pushState(null, '', `?${toSearch(state)}`);
+        render();
+      };
 
       el('head').addEventListener('click', (e) => {
-        const button = (e.target as HTMLElement).closest('button');
-        if (!button?.dataset.sort) return;
-        const column = button.dataset.sort;
+        const column = (e.target as HTMLElement).closest('button')?.dataset.sort;
+        if (!column) return;
         // Clicking the active column flips direction; a new column starts
-        // descending, which is what "best first" means for every column here
-        // except name.
+        // descending, which is what "best first" means everywhere except name.
         state = state.sort === column
           ? { ...state, desc: !state.desc }
           : { ...state, sort: column, desc: column !== 'name' };
-        reset();
-        // A sort change is a discrete commit, so Back should walk to it.
-        history.pushState(null, '', `?${toSearch(state)}`);
-        render();
+        commit();
       });
 
       let typing = 0;
       el('facets').addEventListener('input', (e) => {
         const target = e.target as HTMLInputElement;
         if (target.id === 'q') {
-          // No focus() restoration needed: #q lives outside #facetgroups, so
-          // render() never touches the element being typed into.
           clearTimeout(typing);
           const value = target.value;
-          typing = window.setTimeout(() => { state = { ...state, q: value }; reset(); render(); }, 200);
-          return;
-        }
-        if (target.dataset.weight) {
-          const key = target.dataset.weight as 'quality' | 'deal' | 'value';
+          typing = window.setTimeout(() => { state = { ...state, q: value }; shown = PAGE; render(); }, 200);
+        } else if (target.dataset.weight) {
+          const key = target.dataset.weight as WeightKey;
           state = { ...state, w: { ...state.w, [key]: Number(target.value) / 100 } };
-          render();
+          app.querySelector(`[data-weightval=${key}]`)!.textContent = target.value;
+          renderRows();   // weights cannot change a facet count
+          syncUrl();
         }
       });
 
@@ -417,50 +444,39 @@ const base = import.meta.env.BASE_URL;
         const target = e.target as HTMLInputElement | HTMLSelectElement;
         if (target.id === 'genre') state = { ...state, genre: target.value };
         else if (target.name === 'minQuality') state = { ...state, minQuality: Number(target.value) };
-        else if (target.name === 'esrb') state = { ...state, esrb: target.value };
-        else if (target.name) state = { ...state, [target.name]: target.value } as ExploreState;
-        else return;
-        reset();
-        history.pushState(null, '', `?${toSearch(state)}`);
-        render();
+        else if (target.name && target.name !== 'q') {
+          state = { ...state, [target.name]: target.value } as ExploreState;
+        } else return;
+        commit();
       });
 
       el('chips').addEventListener('click', (e) => {
-        const button = (e.target as HTMLElement).closest('button');
-        const key = button?.dataset.clear;
+        const key = (e.target as HTMLElement).closest('button')?.dataset.clear;
         if (!key) return;
         state = key === 'all'
           ? { ...DEFAULTS, w: state.w, sort: state.sort, desc: state.desc }
           : { ...state, [key]: key === 'minQuality' ? 0 : '' } as ExploreState;
-        reset();
-        history.pushState(null, '', `?${toSearch(state)}`);
-        render();
+        commit();
       });
 
       app.addEventListener('click', (e) => {
-        const button = (e.target as HTMLElement).closest('button');
-        const choice = button?.dataset.density;
+        const choice = (e.target as HTMLElement).closest('button')?.dataset.density;
         if (!choice) return;
-        density = choice;
         try { localStorage.setItem('ngp:density', choice); } catch { /* private mode */ }
-        app.className = `explore ${density === 'compact' ? 'compact' : ''}`;
-        for (const b of app.querySelectorAll('[data-density]')) {
-          b.setAttribute('aria-pressed', String(b.getAttribute('data-density') === density));
-        }
+        applyDensity(choice);
       });
 
-      el('more').addEventListener('click', () => { shown += PAGE; render(); });
+      // Appending rows changes nothing else, so it skips the filter pass.
+      el('more').addEventListener('click', () => { shown += PAGE; renderRows(); });
 
       addEventListener('popstate', () => {
         state = fromSearch(location.search);
-        reset();
+        shown = PAGE;
         render();
       });
 
       render();
-      for (const b of app.querySelectorAll('[data-density]')) {
-        b.setAttribute('aria-pressed', String(b.getAttribute('data-density') === density));
-      }
+      applyDensity(compact ? 'compact' : 'comfortable');
 
       // Cover art, fetched AFTER the table is already on screen. It is a
       // separate file because art URLs carry an irreducible 48-hex hash --
@@ -473,7 +489,7 @@ const base = import.meta.env.BASE_URL;
         .then((loaded) => {
           if (!loaded || Object.keys(loaded).length === 0) return;
           Object.assign(art, loaded);
-          render();
+          renderRows();
         })
         .catch(() => { /* the table is already usable */ });
     }

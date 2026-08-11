@@ -94,7 +94,7 @@ const headline = [...inExtra]
               background: var(--bg); color: var(--fg); }
     .suggest { list-style: none; padding: 0; margin: 0.4rem 0 0; display: grid; gap: 0.25rem; }
     .suggest button { width: 100%; text-align: left; font: inherit; cursor: pointer;
-              background: var(--card); border: 1px solid var(--line);
+              background: var(--surface); border: 1px solid var(--line);
               border-radius: 6px; padding: 0.45rem 0.7rem; color: inherit; }
     .suggest button:hover { border-color: var(--accent); color: var(--accent); }
     .tiers { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1.5rem 0 0.75rem; }
@@ -102,7 +102,7 @@ const headline = [...inExtra]
     .tiers input[type=number] { width: 5.5rem; padding: 0.35rem; font: inherit;
               border: 1px solid var(--line); border-radius: 6px;
               background: var(--bg); color: var(--fg); }
-    .verdict { background: var(--card); border: 1px solid var(--line);
+    .verdict { background: var(--surface); border: 1px solid var(--line);
                border-radius: 10px; padding: 1rem 1.1rem; margin: 1rem 0; }
     /* A bar reads faster than a dollar gap: the question is "how far along am
        I", and a length answers that better than a number does. */
@@ -111,7 +111,7 @@ const headline = [...inExtra]
     .bar span { display: block; height: 100%; background: var(--good); }
     .barnote { color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem; }
     .verdict h2 { margin: 0 0 0.3rem; font-size: 1.25rem; letter-spacing: -0.02em; }
-    .yes { color: var(--free); }
+    .yes { color: var(--good); }
     .no { color: var(--fg); }
     .wishlist { list-style: none; padding: 0; display: grid; gap: 0.35rem; margin: 1rem 0; }
     .wishlist li { display: flex; gap: 0.6rem; align-items: baseline;
