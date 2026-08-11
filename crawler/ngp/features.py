@@ -60,6 +60,11 @@ def _mode(raw: str | None) -> str | None:
     return lowered if lowered in ("optional", "required") else None
 
 
+# Real counts observed live are 1-11. Sony also publishes 99 on a couple of
+# rows, which is a missing value wearing a number, not a 99-player couch.
+_MAX_PLAYERS = 16
+
+
 def _player_count(raw: str | None) -> int | None:
     if raw is None:
         return None
@@ -68,7 +73,8 @@ def _player_count(raw: str | None) -> int | None:
         return None
     # Values observed so far are bare integers ("1", "2", "4"). Taking the
     # maximum keeps a hypothetical "1-4" correct rather than reading it as 1.
-    return max(int(n) for n in found)
+    count = max(int(n) for n in found)
+    return count if count <= _MAX_PLAYERS else None
 
 
 def decode_features(notices: list[dict] | None) -> Features:

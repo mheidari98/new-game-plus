@@ -4,12 +4,12 @@ __pycache__/
 .pytest_cache/
 node_modules/
 site/dist/
-site/.astro/
+.astro/
 data/cache/
 out/
 
-# Internal planning doc - deliberately not published
-docs/plan.md
-docs/handoff.md
 data/
 history/
+
+# docs/ is working material and is never published or committed.
+docs/

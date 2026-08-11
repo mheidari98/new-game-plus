@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyFilters, coverage, facetCounts, matches, playerCount } from './filters';
+import { applyFilters, facetCounts, matches, playtimeKnown } from './filters';
 import { DEFAULTS, type ExploreState } from './urlstate';
 import type { Row } from './index';
 
@@ -8,7 +8,7 @@ const row = (over: Partial<Row>): Row => ({
   discount_pct: 50, is_free: false, plus_extra: false, plus_classics: false,
   local_players: 1, dualsense: false, release_year: 2022, critic_score: null,
   vs_historical_min: null, vs_typical_sale: null, hours_main: null,
-  splitscreen: null, perspective: null, quality: 70, discount_depth: 50,
+  splitscreen: null, quality: 70, discount_depth: 50,
   price_anchor: 50, genres: ['Action'], platforms: ['PS5'], esrb: 'ESRB_TEEN',
   psvr2: null, evidence: 'medium', ...over,
 });
@@ -28,7 +28,7 @@ describe('the sparse-column policy', () => {
   });
 
   it('reports coverage so the UI can print it', () => {
-    expect(coverage([known, unknown, unknown], 'hours_main')).toEqual({ known: 1, total: 3 });
+    expect(playtimeKnown([known, unknown, unknown])).toBe(1);
   });
 });
 
@@ -46,21 +46,6 @@ describe('quality gate', () => {
   });
 });
 
-describe('playerCount', () => {
-  it('passes real counts through', () => {
-    expect(playerCount(1)).toBe(1);
-    expect(playerCount(4)).toBe(4);
-    expect(playerCount(11)).toBe(11);
-  });
-
-  it('treats the 99 sentinel as unknown', () => {
-    // Two live rows carry local_players = 99. Without this the UI offers
-    // "99-player couch" and the 4+ bucket is wrong.
-    expect(playerCount(99)).toBe(null);
-    expect(playerCount(null)).toBe(null);
-  });
-});
-
 describe('matches', () => {
   it('treats an unknown player count as not couch co-op', () => {
     // null means the store did not say, which is not the same as one player,
@@ -72,11 +57,6 @@ describe('matches', () => {
   it('reads the players facet as "at least"', () => {
     expect(matches(row({ local_players: 4 }), state({ players: '4' }))).toBe(true);
     expect(matches(row({ local_players: 2 }), state({ players: '4' }))).toBe(false);
-  });
-
-  it('never lets the 99 sentinel satisfy a couch filter', () => {
-    expect(matches(row({ local_players: 99 }), state({ players: '4' }))).toBe(false);
-    expect(matches(row({ local_players: 99 }), state({ players: '2' }))).toBe(false);
   });
 
   it('matches the search case-insensitively', () => {

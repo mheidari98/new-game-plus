@@ -29,7 +29,7 @@ from ngp.hltb import HowLongToBeat, SearchFailed
 from ngp.igdb import Igdb
 from ngp.net import HttpClient, workers_for
 from ngp.psplus import PlusIndex, fetch_all
-from ngp.publish import render, save, save_art, save_art_head
+from ngp.publish import ART_HEAD_ROWS, render, save, save_art
 from ngp.ratelimit import AdaptiveLimiter, RateLimitExceeded
 from ngp.ratings import Metacritic
 from ngp.store import MAX_WINDOW, StoreClient, money_to_cents
@@ -224,8 +224,8 @@ def crawl(args):
         baseline_count=baseline,
     )
     save(REPO / args.out, body, packed)
-    with_art = save_art(REPO / args.art, games)
-    head_art, head_bytes = save_art_head(REPO / args.art_head, games)
+    with_art, _ = save_art(REPO / args.art, games)
+    head_art, head_bytes = save_art(REPO / args.art_head, games, ART_HEAD_ROWS)
     last_good.write_text(json.dumps({"game_count": len(games)}))
     log.info("cover art: %d of %d games (%d served in the head manifest, %d B gzipped)",
              with_art, len(games), head_art, head_bytes)

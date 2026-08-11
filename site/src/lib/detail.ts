@@ -9,6 +9,7 @@
  */
 import type { Row } from './index';
 import { artUrl, esc, esrbLabel, price, storeUrl } from './index';
+import { TIERS } from './plusmath';
 
 export { esc };
 
@@ -30,18 +31,16 @@ export const gameUrl = (base: string, id: string, rank: number) =>
 const row = (label: string, value: string | null) =>
   value ? `<div class="fact"><dt>${esc(label)}</dt><dd>${value}</dd></div>` : '';
 
-/** US list price for 12 months of Extra, mirroring TIERS in plusmath.ts. One
- *  literal rather than an import, because plusmath.ts models the whole tier
- *  picker and this page only ever asks about Extra. */
-const PLUS_EXTRA_YEARLY_CENTS = 13499;
+/** From the same table /plus/ uses, so the two pages cannot quote different
+ *  subscription prices. */
+const EXTRA_YEARLY_CENTS = TIERS.find((t) => t.id === 'extra')!.yearlyCents;
 
 /** "Should I buy this, or subscribe?" answered where the decision is made.
  *
- *  Uses today's price, because the honest counterfactual is what you would pay
- *  instead of subscribing -- not a list price you were never going to pay. A
- *  free game returns nothing: it gives a subscription no credit, and an
- *  argument built on it would be a pitch rather than arithmetic.
- */
+ *  Uses today's price: the honest counterfactual is what you would pay instead
+ *  of subscribing, not a list price you were never going to pay. A free game
+ *  returns nothing -- it gives a subscription no credit, and an argument built
+ *  on it would be a pitch rather than arithmetic. */
 export function plusVerdict(game: Row, yearlyCents: number): string {
   if (game.price_cents === 0) return '';
   if (game.plus_extra) {
@@ -71,6 +70,7 @@ export function detailHtml(
   const off = game.discount_pct > 0;
   const players = game.local_players;
   const esrb = esrbLabel(game.esrb);
+  const verdict = plusVerdict(game, EXTRA_YEARLY_CENTS);
 
   return `
     ${art ? `<img class="cover" src="${esc(artUrl(art, 440))}" alt=""
@@ -92,7 +92,6 @@ export function detailHtml(
       ${row('Rated', esrb && esc(esrb))}
       ${row('Players on one console', players ? `${players}${players >= 2 ? ' — couch co-op' : ''}` : null)}
       ${row('Split screen', game.splitscreen === null ? null : game.splitscreen ? 'yes' : 'no')}
-      ${row('Perspective', game.perspective ? esc(game.perspective) : null)}
       ${row('Main story', game.hours_main ? `about ${game.hours_main} hours` : null)}
       ${row('Cost per hour', game.hours_main && game.price_cents
         ? price(Math.round(game.price_cents / game.hours_main)) : null)}
@@ -100,8 +99,7 @@ export function detailHtml(
       ${row('PS VR2', game.psvr2 ? esc(game.psvr2) : null)}
     </dl>
 
-    ${plusVerdict(game, PLUS_EXTRA_YEARLY_CENTS)
-      ? `<p class="note">${plusVerdict(game, PLUS_EXTRA_YEARLY_CENTS)}</p>` : ''}
+    ${verdict ? `<p class="note">${verdict}</p>` : ''}
 
     <h2>Why it ranks where it does</h2>
     <dl class="facts">

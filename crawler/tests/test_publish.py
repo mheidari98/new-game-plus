@@ -169,15 +169,25 @@ class TestCoverArt:
     def test_save_art_keys_urls_by_product_id(self, tmp_path):
         out = tmp_path / "art.json"
         games = [row(0, art=self.ART), row(1, art=self.ART)]
-        assert save_art(out, games) == 2
+        rows, _ = save_art(out, games)
+        assert rows == 2
         assert json.loads(out.read_text())[games[0]["id"]] == self.ART
 
     def test_games_without_art_are_absent_rather_than_null(self, tmp_path):
         # A missing key is what lets the page render no image at all; a null
         # would still have to be checked and costs bytes in the build input.
         out = tmp_path / "art.json"
-        assert save_art(out, [row(0, art=None), row(1, art=self.ART)]) == 1
+        rows, _ = save_art(out, [row(0, art=None), row(1, art=self.ART)])
+        assert rows == 1
         assert list(json.loads(out.read_text())) == [row(1)["id"]]
+
+    def test_limit_takes_the_popularity_head(self, tmp_path):
+        # Rows arrive in popularity order, so a limit is a "most-browsed"
+        # slice. The served manifest exists because the full one is 428 KB.
+        out = tmp_path / "art-head.json"
+        rows, _ = save_art(out, [row(i, art=self.ART) for i in range(5)], limit=2)
+        assert rows == 2
+        assert list(json.loads(out.read_text())) == [row(0)["id"], row(1)["id"]]
 
     def test_save_art_creates_its_directory(self, tmp_path):
         out = tmp_path / "nested" / "art.json"
