@@ -88,11 +88,13 @@ describe('artUrl', () => {
   const ART =
     'https://image.api.playstation.com/vulcan/ap/rnd/202306/1219/1c7b75d8.png';
 
-  it('asks the CDN for the size actually rendered', () => {
-    // Measured: the raw asset is 403,800 B, ?w=200 is 12,679 B. Scaling a full
-    // asset down in CSS would still send every one of those bytes.
-    expect(artUrl(ART, 200)).toBe(`${ART}?w=200`);
-    expect(artUrl(ART, 440)).toBe(`${ART}?w=440`);
+  it('asks the CDN for the size actually rendered, with BOTH dimensions', () => {
+    // Measured against the live CDN: `?w=` alone snaps to a size ladder --
+    // w=64, w=80 and w=120 all return the same 6,535 B file. Passing h as well
+    // triggers a real resize: w=64&h=64 is 2,373 B. Sending w alone is the
+    // difference between a 72px thumbnail costing 6.5 KB and costing 2.4 KB.
+    expect(artUrl(ART, 72)).toBe(`${ART}?w=72&h=72`);
+    expect(artUrl(ART, 440)).toBe(`${ART}?w=440&h=440`);
   });
 
   it('is null when the crawl has no art for that game', () => {

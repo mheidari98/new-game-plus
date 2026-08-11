@@ -99,12 +99,18 @@ const ESRB: Record<string, string> = {
 export const esrbLabel = (esrb: string | null): string | null =>
   esrb ? (ESRB[esrb] ?? esrb.replace('ESRB_', '').replaceAll('_', ' ')) : null;
 
-/** Sony's CDN resizes on request, so always ask for the size actually rendered:
- *  the raw asset is ~400 KB, `?w=200` is 12.7 KB. MASTER art is square at every
- *  width, so one dimension is enough. Null art means the crawl has not reached
- *  that game yet, and the caller renders no image rather than a placeholder. */
-export const artUrl = (url: string | null | undefined, width: number) =>
-  url ? `${url}?w=${width}` : null;
+/** Sony's CDN resizes on request, but `?w=` ALONE SNAPS TO A SIZE LADDER --
+ *  measured, `w=64`, `w=80` and `w=120` all return the same 6,535 B file, so
+ *  asking for a smaller width buys nothing. Passing `h` as well triggers a real
+ *  resize: `w=64&h=64` is 2,373 B, a 64% saving, and returns the exact
+ *  dimensions rendered. The CDN also negotiates AVIF off the `Accept` header
+ *  every modern browser already sends, for a further 19-35% at no cost to us.
+ *
+ *  MASTER art is square (1024x1024 on all 22 sampled), so one number is enough.
+ *  Null art means the crawl has not reached that game yet, and the caller
+ *  renders no image rather than a placeholder. */
+export const artUrl = (url: string | null | undefined, size: number) =>
+  url ? `${url}?w=${size}&h=${size}` : null;
 
 /** Fetch and decode the payload an island points at. Every island used to
  *  hand-roll this without a catch, so a failed fetch left "Loading…" up
