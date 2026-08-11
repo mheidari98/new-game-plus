@@ -37,6 +37,20 @@ const headline = [...inExtra]
   </div>
 
   <section class="fineprint">
+    <h2>When the answer is no</h2>
+    <p class="note">
+      Every honest guide to this subscription publishes the case against it, so here is ours.
+      Skip it if:
+    </p>
+    <ul>
+      <li>You mostly play one or two live-service games you already own.</li>
+      <li>You have a backlog you have not finished. The catalogue makes that worse, not better.</li>
+      <li>You buy four or five games a year and are happy to wait for a sale.</li>
+      <li>You want to keep games permanently rather than rent access to them — catalogue
+        games leave, and Sony gives no notice here.</li>
+      <li>You mostly play physical discs.</li>
+    </ul>
+
     <h2>What this does and does not count</h2>
     <ul>
       <li>
@@ -90,6 +104,12 @@ const headline = [...inExtra]
               background: var(--bg); color: var(--fg); }
     .verdict { background: var(--card); border: 1px solid var(--line);
                border-radius: 10px; padding: 1rem 1.1rem; margin: 1rem 0; }
+    /* A bar reads faster than a dollar gap: the question is "how far along am
+       I", and a length answers that better than a number does. */
+    .bar { height: 14px; border-radius: 999px; background: var(--surface-2);
+           border: 1px solid var(--line); overflow: hidden; margin: 0.6rem 0 0.35rem; }
+    .bar span { display: block; height: 100%; background: var(--good); }
+    .barnote { color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem; }
     .verdict h2 { margin: 0 0 0.3rem; font-size: 1.25rem; letter-spacing: -0.02em; }
     .yes { color: var(--free); }
     .no { color: var(--fg); }
@@ -150,19 +170,34 @@ const headline = [...inExtra]
           <input type="number" id="cost" min="0" step="1" value="${(tier.yearlyCents / 100).toFixed(0)}" />
         </label>`;
 
+      // price() renders 0 as "Free", which is right for a game and wrong for a
+      // running total -- "Free of $134.99 covered" reads as nonsense. Here a
+      // zero means "nothing covered yet", so it stays a figure.
+      const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
       function render() {
         const picks: Pick[] = chosen.map((id) => byId.get(id)!);
         const verdict = evaluate(picks, tier);
         const net = Math.abs(verdict.netCents);
 
+        // Capped at 100 so an over-covered list does not overflow the track.
+        const progress = Math.min(100,
+          Math.round((verdict.coveredCents / Math.max(1, verdict.costCents)) * 100));
+        const bar = `
+          <div class="bar" role="img"
+               aria-label="${progress}% of the subscription price covered by your list">
+            <span style="width:${progress}%"></span>
+          </div>
+          <p class="barnote">${money(verdict.coveredCents)} of ${money(verdict.costCents)} covered</p>`;
+
         el('verdict').innerHTML = verdict.worthIt
-          ? `<h2 class="yes">Yes — by ${price(net)}</h2>
+          ? `<h2 class="yes">Yes — by ${price(net)}</h2>${bar}
              <p>${verdict.covered.length} of your ${picks.length} game${picks.length === 1 ? '' : 's'}
              ${verdict.covered.length === 1 ? 'is' : 'are'} in the ${tier.label} catalogue,
              worth ${price(verdict.coveredCents)} at today's prices against
              ${price(verdict.costCents)} a year.</p>
              <p class="note">${tier.note}</p>`
-          : `<h2 class="no">${picks.length ? 'Not yet' : 'Add some games'} — ${price(net)} short</h2>
+          : `<h2 class="no">${picks.length ? 'Not yet' : 'Add some games'} — ${price(net)} short</h2>${bar}
              <p>${picks.length
                 ? `Only ${price(verdict.coveredCents)} of your list is in the ${tier.label} catalogue,
                    against ${price(verdict.costCents)} a year. Buying the ones you want outright is
