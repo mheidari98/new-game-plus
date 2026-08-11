@@ -1,6 +1,7 @@
 ---
 import Base from '../layouts/Base.astro';
 import { artUrl, decode, price } from '../lib/index';
+import { playerCount } from '../lib/filters';
 import { gameUrl } from '../lib/detail';
 import raw from '../../public/index.json';
 import art from '../art.json';
@@ -11,13 +12,22 @@ const base = import.meta.env.BASE_URL;
 // prerendered page, so the rank is taken before any sorting.
 const rankOf = new Map(rows.map((r, i) => [r.id, i]));
 
+/** A discount shallower than this is not worth the front page. 40% is where
+ *  the store's own "big sale" banding starts. */
+const DEAL_FLOOR_PCT = 40;
+const FREE_SHELF = 12;
+const DEALS_SHELF = 10;
+
 const free = rows.filter((r) => r.is_free || r.price_cents === 0)
-  .sort((a, b) => b.quality - a.quality).slice(0, 12);
+  .sort((a, b) => b.quality - a.quality).slice(0, FREE_SHELF);
 const inPlus = rows.filter((r) => r.plus_extra);
 const plusValue = inPlus.reduce((n, r) => n + r.base_cents, 0);
-const deals = rows.filter((r) => !r.plus_extra && !r.is_free && r.discount_pct >= 40)
-  .sort((a, b) => b.quality - a.quality).slice(0, 10);
-const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
+const deals = rows.filter((r) => !r.plus_extra && !r.is_free && r.discount_pct >= DEAL_FLOOR_PCT)
+  .sort((a, b) => b.quality - a.quality).slice(0, DEALS_SHELF);
+// Same clamp the explorer uses: two rows carry a 99 sentinel, which is a
+// missing value wearing a number rather than a 99-player couch.
+const couch = rows.filter((r) => playerCount(r.local_players ?? null) !== null
+  && (r.local_players as number) >= 2).length;
 ---
 <Base title="new-game-plus — what to play on a new PS5"
       tagline="You just bought a PS5. You don't have to buy games yet.">
@@ -82,7 +92,12 @@ const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
         </li>
       ))}
     </ol>
-    <p><a href={`${base}deals/`}>Filter everything →</a></p>
+    <div class="presets">
+      <a href={`${base}explore/?players=2&price=under20`}>Couch co-op under $20</a>
+      <a href={`${base}explore/?price=free&evidence=medium`}>Free and actually good</a>
+      <a href={`${base}explore/?plus=extra`}>Already in PS+</a>
+      <a href={`${base}explore/`}>Explore everything →</a>
+    </div>
   </section>
 
   <p class="note">
@@ -102,5 +117,12 @@ const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
     /* Tighter than the shared rules, on this page only. */
     .meta { margin-top: 0.2rem; }
     .rows li { margin: 0.5rem 0; }
+    /* Named entry points into the explorer. A newcomer does not know which
+       filter to touch, so the front page hands them four that already work. */
+    .presets { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
+    .presets a { border: 1px solid var(--line); border-radius: 999px;
+                 padding: 0.25rem 0.75rem; font-size: 0.9rem;
+                 color: inherit; text-decoration: none; }
+    .presets a:hover { border-color: var(--accent); color: var(--accent); }
   </style>
 </Base>
