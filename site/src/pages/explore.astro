@@ -70,6 +70,15 @@ const base = import.meta.env.BASE_URL;
        each row's height, so the scrollbar does not jump. */
     table.results tbody tr { content-visibility: auto; contain-intrinsic-size: auto 52px; }
     table.results .right { text-align: right; }
+    /* 72px square. PS art is 1024x1024 on every sampled cover, so the box is
+       square and reserved by width/height -- nothing shifts when it lands.
+       Below the ~90px legibility floor cited for grids, which is fine: the
+       title is real text six pixels away, so the cover is a recognition cue
+       rather than the only identifier. */
+    .withcover { display: flex; gap: var(--space-sm); align-items: flex-start; }
+    .cover72 { width: 72px; height: 72px; flex: none; border-radius: var(--radius-sm);
+               object-fit: cover; background: var(--surface-2); }
+    .compact .cover72 { width: 40px; height: 40px; }
     table.results .title { color: inherit; text-decoration: none; font-weight: 600; }
     table.results .title:hover { color: var(--accent); text-decoration: underline; }
     .rowtags { display: block; margin-top: 0.15rem; }
@@ -91,7 +100,7 @@ const base = import.meta.env.BASE_URL;
   </style>
 
   <script>
-    import { esc, loadIndex, price } from '../lib/index';
+    import { artUrl, esc, loadIndex, price } from '../lib/index';
     import { gameUrl } from '../lib/detail';
     import { applyFilters, coverage, facetCounts } from '../lib/filters';
     import { finalScore } from '../lib/score';
@@ -126,12 +135,23 @@ const base = import.meta.env.BASE_URL;
         value: state.w.value < 0 ? weights.final.value : state.w.value,
       });
 
+      /** Populated by the deferred art fetch below; empty until then, and
+       *  every row renders correctly with no cover. */
+      const art: Record<string, string> = {};
+
       let shown = PAGE;
       let density = (() => {
         try { return localStorage.getItem('ngp:density') ?? 'comfortable'; } catch { return 'comfortable'; }
       })();
 
       const hours = coverage(rows, 'hours_main');
+      // Say what this set actually is. It is the store's deals grid plus the
+      // free-to-play category, not the whole catalogue -- a full-price game
+      // that is not on sale today was never crawled, so searching for it finds
+      // nothing. Implying completeness here is the same confident-wrong-number
+      // the project's conventions forbid.
+      const onSale = rows.filter((r) => r.discount_pct > 0).length;
+      const freeCount = rows.filter((r) => r.is_free || r.price_cents === 0).length;
       const genres = [...new Set(rows.flatMap((r) => r.genres))].sort();
 
       const COLUMNS = ['name', 'price', 'off', 'score', 'quality', 'players', 'hours'] as const;
@@ -160,8 +180,18 @@ const base = import.meta.env.BASE_URL;
       ];
 
       app.className = `explore ${density === 'compact' ? 'compact' : ''}`;
+      // The search field is rendered ONCE, outside the re-rendered region.
+      // renderFacets() rebuilds #facetgroups with innerHTML on every keystroke,
+      // and rebuilding the input under the user's cursor destroys the element
+      // they are typing into -- the caret jumps and focus is lost.
       app.innerHTML = `
-        <aside class="facets" id="facets"></aside>
+        <aside class="facets" id="facets">
+          <label class="fieldlabel" for="q">Search games</label>
+          <input type="search" id="q" value="${esc(state.q)}"
+                 placeholder="${rows.length.toLocaleString()} on sale or free" />
+          <p class="cover" id="scope"></p>
+          <div id="facetgroups"></div>
+        </aside>
         <div>
           <div class="presets" id="presets"></div>
           <div class="chips" id="chips"></div>
@@ -183,6 +213,10 @@ const base = import.meta.env.BASE_URL;
         </div>`;
 
       const el = (id: string) => document.getElementById(id)!;
+
+      el('scope').textContent =
+        `${onSale.toLocaleString()} games on sale and ${freeCount.toLocaleString()} free-to-play. `
+        + 'A game that is not discounted today is not in this list yet.';
 
       // Safari throws SecurityError above 100 replaceState calls per 30 s and a
       // slider drag fires `input` continuously, so URL writes are throttled.
@@ -222,10 +256,7 @@ const base = import.meta.env.BASE_URL;
             </label>`).join('');
         }).join('');
 
-        el('facets').innerHTML = `
-          <label class="fieldlabel" for="q">Search games</label>
-          <input type="search" id="q" value="${esc(state.q)}"
-                 placeholder="${rows.length.toLocaleString()} games" />
+        el('facetgroups').innerHTML = `
           ${groups}
           <details><summary>Genre</summary>
             <select id="genre" aria-label="Genre">
@@ -309,6 +340,12 @@ const base = import.meta.env.BASE_URL;
           : page.map((g) => `
             <tr>
               <td>
+                <div class="withcover">
+                  ${art[g.id]
+                    ? `<img class="cover72" src="${esc(artUrl(art[g.id], 72))}" alt=""
+                            width="72" height="72" loading="lazy" decoding="async" />`
+                    : '<span class="cover72" aria-hidden="true"></span>'}
+                  <span>
                 <a class="title" href="${esc(gameUrl(BASE, g.id, rankOf.get(g.id)!))}">${esc(g.name)}</a>
                 <span class="rowtags">
                   ${g.plus_extra ? '<span class="tag good">PS+ Extra</span>' : ''}
@@ -318,6 +355,8 @@ const base = import.meta.env.BASE_URL;
                   ${g.vs_historical_min === 100 ? '<span class="tag good">lowest we have recorded</span>' : ''}
                   ${g.psvr2 ? `<span class="tag">PS VR2 ${esc(g.psvr2)}</span>` : ''}
                 </span>
+                  </span>
+                </div>
               </td>
               <td class="right">${g.price_cents === 0
                 ? '<span class="free">Free</span>'
@@ -360,12 +399,11 @@ const base = import.meta.env.BASE_URL;
       el('facets').addEventListener('input', (e) => {
         const target = e.target as HTMLInputElement;
         if (target.id === 'q') {
+          // No focus() restoration needed: #q lives outside #facetgroups, so
+          // render() never touches the element being typed into.
           clearTimeout(typing);
           const value = target.value;
-          typing = window.setTimeout(() => {
-            state = { ...state, q: value }; reset(); render();
-            (document.getElementById('q') as HTMLInputElement)?.focus();
-          }, 200);
+          typing = window.setTimeout(() => { state = { ...state, q: value }; reset(); render(); }, 200);
           return;
         }
         if (target.dataset.weight) {
@@ -423,6 +461,21 @@ const base = import.meta.env.BASE_URL;
       for (const b of app.querySelectorAll('[data-density]')) {
         b.setAttribute('aria-pressed', String(b.getAttribute('data-density') === density));
       }
+
+      // Cover art, fetched AFTER the table is already on screen. It is a
+      // separate file because art URLs carry an irreducible 48-hex hash --
+      // 34.6 B gzipped each that gzip cannot shrink -- so putting them in
+      // index.json would cost 428 KB across the catalogue. The head manifest
+      // covers the popular rows at ~69 KB. A failure here is silent by design:
+      // the page already works without it.
+      fetch(`${BASE}art-head.json`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((loaded) => {
+          if (!loaded || Object.keys(loaded).length === 0) return;
+          Object.assign(art, loaded);
+          render();
+        })
+        .catch(() => { /* the table is already usable */ });
     }
   </script>
 </Base>

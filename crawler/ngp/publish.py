@@ -89,6 +89,33 @@ def render(games, weights, generated_at=None) -> tuple[bytes, bytes, dict]:
         "over_budget": len(packed) > GZIP_BUDGET_BYTES}
 
 
+# How many rows get a *served* art manifest. Rows are in popularity order, so
+# the head is what anyone actually browses. Measured: an art URL costs 34.6 B
+# gzipped that gzip cannot shrink (the 48-hex asset hash is random), so the
+# whole catalogue would be 428 KB -- which is why art is not in index.json at
+# all. 2,000 rows is ~69 KB, fetched only when a page wants thumbnails.
+ART_HEAD_ROWS = 2000
+
+
+def save_art_head(path, games) -> tuple[int, int]:
+    """Art URLs for the popular head, served to the browser.
+
+    Separate from `save_art`, which writes the *build-time* file: pages that
+    render at build time bake in an <img> and cost the client nothing, but the
+    runtime islands (`/explore/`, `/plus/`) have no such luxury and would
+    otherwise show a catalogue of text. This file is fetched after first paint,
+    so it never delays the page.
+
+    Returns `(rows_with_art, gzip_bytes)` so the caller can log both.
+    """
+    art = {g["id"]: g["art"] for g in games[:ART_HEAD_ROWS] if g.get("art")}
+    body = json.dumps(art, separators=(",", ":"), sort_keys=True).encode()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return len(art), len(gzip.compress(body, 9))
+
+
 def save_art(path, games) -> int:
     """Cover-art URLs, keyed by product id, for the site build to read.
 

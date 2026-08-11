@@ -151,7 +151,10 @@ describe('cover art on the game page', () => {
 
   it('renders a sized image when the build supplies one', () => {
     const html = detailHtml(game(), 2026, ART);
-    expect(html).toContain(`src="${ART}?w=440"`);
+    // Both dimensions, and the & is entity-escaped because the URL is
+    // interpolated into an attribute. `?w=` alone would snap to the CDN's size
+    // ladder and ship a larger file than the one rendered -- see artUrl.
+    expect(html).toContain(`src="${ART}?w=440&amp;h=440"`);
     // width/height reserve the box so the text below does not jump.
     expect(html).toMatch(/width="440"\s+height="440"/);
   });

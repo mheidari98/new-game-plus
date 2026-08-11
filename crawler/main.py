@@ -29,7 +29,7 @@ from ngp.hltb import HowLongToBeat, SearchFailed
 from ngp.igdb import Igdb
 from ngp.net import HttpClient, workers_for
 from ngp.psplus import PlusIndex, fetch_all
-from ngp.publish import render, save, save_art
+from ngp.publish import render, save, save_art, save_art_head
 from ngp.ratelimit import AdaptiveLimiter, RateLimitExceeded
 from ngp.ratings import Metacritic
 from ngp.store import MAX_WINDOW, StoreClient, money_to_cents
@@ -225,8 +225,10 @@ def crawl(args):
     )
     save(REPO / args.out, body, packed)
     with_art = save_art(REPO / args.art, games)
+    head_art, head_bytes = save_art_head(REPO / args.art_head, games)
     last_good.write_text(json.dumps({"game_count": len(games)}))
-    log.info("cover art: %d of %d games", with_art, len(games))
+    log.info("cover art: %d of %d games (%d served in the head manifest, %d B gzipped)",
+             with_art, len(games), head_art, head_bytes)
 
     log.info("published %d games: %d B raw, %d B gzipped (%.0f%% of budget)",
              stats["count"], stats["raw_bytes"], stats["gzip_bytes"],
@@ -638,6 +640,7 @@ def main(argv=None):
     p.add_argument("--out", default="site/public/index.json")
     # Outside public/ on purpose: build input, never served to a browser.
     p.add_argument("--art", default="site/src/art.json")
+    p.add_argument("--art-head", default="site/public/art-head.json")
     p.add_argument("-v", "--verbose", action="count", default=0)
     args = p.parse_args(argv)
 
