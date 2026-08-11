@@ -51,6 +51,14 @@ These cost real debugging time. None are obvious from reading the code.
   Feeding a product's own classification back into `filterBy` matches nothing.
 - PS5/`All games` are **concept** grids (`concepts[]`); PS4/`All deals` are **product** grids
   (`products[]`). Handle both shapes.
+- **One concept sells several products, and they are different games at different prices.**
+  Concept 234689 carries `ITTAKESTWORETAIL` ($39.99) *and* `HAZELIGHTBUNDLE5` (67% off), so
+  publishing one row per concept let the deals grid's bundle speak for the game and made
+  "It Takes Two" unfindable. Measured: 612 SKUs dropped by the deals pass and 146 concepts whose
+  own `products[0]` was shadowed — 758 priced products invisible. Enrichment stays keyed by
+  concept, because that is what costs requests; publishing fans out to every priced sibling.
+  A sibling must not take the enriched product's name — the detail call describes `products[0]`
+  alone, and reusing it renames every edition after whichever one got enriched.
 - `sortingOptions` in the response is not an exhaustive allowlist. Read back `sortedBy.name`.
 - Category counts drift daily — "All deals" moved 4335 → 4337 in one day. Never assert a constant.
 
@@ -96,9 +104,17 @@ These cost real debugging time. None are obvious from reading the code.
 - Astro's `base` has no trailing slash, so `${BASE_URL}index.json` renders as
   `/repoindex.json`. `astro.config.mjs` normalises it.
 - Cover art is not published in `index.json` — a URL costs 34.6 B gzipped per row that gzip
-  cannot shrink (the asset hash is random), which is 428 KB over the full catalogue. It is
-  cached by the crawler and written to `site/src/art.json`, which sits outside `public/` so it
-  is build input only; the static pages bake in the `<img>` and no browser downloads it.
+  cannot shrink (the asset hash is random), which is 428 KB over the full catalogue. It goes to
+  two files instead. `site/src/art.json` is keyed by product id and sits outside `public/`, so
+  it is build input only and the prerendered game pages bake in the `<img>`.
+  `site/public/art.json` is the served manifest and is a **positional array over index rows**:
+  the browser already holds the ids, and measured on 2,000 live rows keys cost 51.5 B gzipped an
+  entry against 35.3 B without, so 640 KB becomes 439 KB. The client refuses the file unless
+  `art.length === rows.length` — a short array shifts every cover after the gap onto the wrong
+  game, which looks like working software.
+- A head slice of the art manifest is not enough. `ART_HEAD_ROWS = 2000` against a 12,700-game
+  catalogue meant 84% of rows showed a grey box, and the reports were always about one specific
+  game ("why is there no cover for Ghost of Tsushima?") rather than about the 10,700.
 - Sony ships several image roles and no literal "box art" key. `MASTER` was the only role
   present on all 18 products sampled across the popularity range, so it leads `ART_ROLES`;
   `LOGO` and `SCREENSHOT` are never box art. The URL carries an asset hash and cannot be

@@ -1,0 +1,32 @@
+---
+/**
+ * A retired route, forwarding to its replacement with the query string intact.
+ *
+ * The query string is the whole reason this is a page and not Astro's
+ * `redirects:` config: that emits a bare meta refresh, and every shareable URL
+ * the explorer produces carries its filters in `?...`. A meta refresh cannot
+ * forward them, so the script does it and the meta tag is only the no-JS floor
+ * — which is why the two are not saying the same thing, and why the canonical
+ * link points at the bare target rather than at whatever this visitor asked for.
+ */
+interface Props {
+  /** Where this route now lives. Already base-prefixed. */
+  to: string;
+  /** One sentence for the visitor who lands here with JavaScript off. */
+  note: string;
+}
+
+const { to, note } = Astro.props;
+---
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="refresh" content={`0; url=${to}`} />
+  <link rel="canonical" href={to} />
+  <title>Moved</title>
+  <script is:inline define:vars={{ to }}>
+    location.replace(to + location.search + location.hash);
+  </script>
+</head>
+<body><p>{note} <a href={to}>Continue</a>.</p></body>
+</html>

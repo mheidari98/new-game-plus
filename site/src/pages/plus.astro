@@ -54,9 +54,9 @@ const headline = [...inExtra]
     <h2>What this does and does not count</h2>
     <ul>
       <li>
-        Only games in this index count. It covers the store's deals list plus the
-        free-to-play catalogue, not all ~12,000 PS4 and PS5 games, so the real Extra
-        catalogue is larger than what is matched here.
+        Only games in this index count. It is the store's own catalogue as of the last
+        crawl, so a game released or relisted since then will not be found — search for
+        it and add it by hand if the box comes up empty.
       </li>
       <li>
         Savings use <strong>today's price</strong>, not the list price. What you avoid
@@ -113,13 +113,40 @@ const headline = [...inExtra]
     .verdict h2 { margin: 0 0 0.3rem; font-size: 1.25rem; letter-spacing: -0.02em; }
     .yes { color: var(--good); }
     .no { color: var(--fg); }
-    .wishlist { list-style: none; padding: 0; display: grid; gap: 0.35rem; margin: 1rem 0; }
-    .wishlist li { display: flex; gap: 0.6rem; align-items: baseline;
-                   border-bottom: 1px solid var(--line); padding-bottom: 0.35rem; }
-    .wishlist .name { flex: 1; }
+    .wishlist { list-style: none; padding: 0; display: grid; gap: 0.35rem;
+                margin: 1rem 0 0; }
+    .totals { margin: 0 0 2rem; display: grid; gap: 0.2rem; }
+
+    /* One grid shared by the rows and their totals, so a total lands directly
+       under the column it totals. Aligning them separately drifts the moment
+       either side changes width. Tabular figures so the digits stack. */
+    .wishlist li, .totals div {
+      display: grid; grid-template-columns: 1fr 5.5rem 7rem 4.5rem;
+      gap: 0.6rem; align-items: baseline; font-variant-numeric: tabular-nums;
+    }
+    .wishlist li { border-bottom: 1px solid var(--line); padding-bottom: 0.35rem; }
+    .wishlist .rowprice, .totals dd { text-align: right; }
+    .wishlist .tag { text-align: center; }
     .wishlist button { background: none; border: 0; color: var(--muted);
-                       cursor: pointer; font: inherit; }
+                       cursor: pointer; font: inherit; text-align: right; padding: 0; }
     .wishlist button:hover { color: var(--accent); }
+
+    .totals div { padding: 0.2rem 0; }
+    .totals dt { color: var(--muted); font-size: 0.95rem; }
+    .totals dd { margin: 0; }
+    .totals dd.in { color: var(--good); }
+    /* The line that answers "so what am I spending", separated the way an
+       invoice separates its total. */
+    .totals .sum { border-top: 1px solid var(--line); margin-top: 0.2rem; }
+    .totals .sum dt, .totals .sum dd { font-weight: 700; color: var(--fg); }
+
+    @media (max-width: 34rem) {
+      /* The tag and the remove control drop under the name rather than
+         squeezing the price out of alignment. */
+      .wishlist li, .totals div { grid-template-columns: 1fr 5.5rem; }
+      .wishlist .tag { grid-column: 1; justify-self: start; margin: 0.2rem 0 0; }
+      .wishlist button { grid-column: 2; }
+    }
     .fineprint { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.5rem; }
     .fineprint h2 { font-size: 1.1rem; }
     .fineprint li { color: var(--muted); font-size: 0.95rem; margin: 0.4rem 0; }
@@ -131,6 +158,10 @@ const headline = [...inExtra]
 
     const app = document.getElementById('app')!;
     const STORE_KEY = 'ngp:wishlist';
+
+    /** Suggestions offered per keystroke. Enough to recognise the game you
+     *  meant, few enough that the scan can stop early. */
+    const MATCHES = 8;
 
     // The wishlist never leaves the browser: localStorage, no account, no upload.
     const load = (): string[] => {
@@ -157,7 +188,8 @@ const headline = [...inExtra]
         <ul class="suggest" id="suggest"></ul>
         <div class="tiers" id="tiers"></div>
         <div class="verdict" id="verdict"></div>
-        <ul class="wishlist" id="wishlist"></ul>`;
+        <ul class="wishlist" id="wishlist"></ul>
+        <dl class="totals" id="totals"></dl>`;
 
       const el = (id: string) => document.getElementById(id)!;
 
@@ -206,22 +238,53 @@ const headline = [...inExtra]
                    to buy and see whether the catalogue already covers it.`}</p>
              <p class="note">${tier.note}</p>`;
 
+        // Every row shows its own price, covered or not. Hiding the price of a
+        // catalogue game answers "is it included" but not "what is this list
+        // worth", which is the number the totals below are built from.
         el('wishlist').innerHTML = picks.map((g) => {
           const covered = coveredBy(tier.id, g);
           return `<li>
             <span class="name">${esc(g.name)}</span>
-            <span class="tag ${covered ? 'in' : ''}">${covered ? 'in the catalogue' : price(g.price_cents)}</span>
+            <span class="rowprice">${price(g.price_cents)}</span>
+            <span class="tag ${covered ? 'in' : ''}">${
+              covered ? `in ${esc(tier.label)}` : 'you buy it'}</span>
             <button data-remove="${esc(g.id)}" aria-label="Remove ${esc(g.name)}">remove</button>
           </li>`;
         }).join('');
 
+        // The verdict is one number and it hides the shape of the decision: a
+        // "no" can mean the catalogue covers almost nothing or that it covers
+        // most of a list you were only ever going to spend $40 on. Three
+        // figures that reconcile say which.
+        el('totals').innerHTML = picks.length === 0 ? '' : `
+          <div><dt>Your list, at today's prices</dt><dd>${money(verdict.listCents)}</dd></div>
+          <div><dt>Covered by ${esc(tier.label)}</dt>
+               <dd class="in">${money(verdict.coveredCents)}</dd></div>
+          <div class="sum"><dt>You would still pay</dt>
+               <dd>${money(verdict.uncoveredCents)}</dd></div>`;
+
+        renderSuggest();
+      }
+
+      /** Split out of render() because it is the only thing a keystroke
+       *  changes. Typing used to re-run evaluate() and rebuild the verdict, the
+       *  wishlist and the totals per character, all to be thrown away.
+       *
+       *  The scan stops at MATCHES rather than filtering the whole catalogue
+       *  and slicing: a one-character query matches thousands of the ~13,500
+       *  rows, and materialising them to show eight is the same waste again. */
+      function renderSuggest() {
         const q = query.trim().toLowerCase();
-        el('suggest').innerHTML = !q ? '' : rows
-          .filter((r) => r.name.toLowerCase().includes(q) && !chosen.includes(r.id))
-          .slice(0, 8)
-          .map((r) => `<li><button data-add="${esc(r.id)}">${esc(r.name)} — ${price(r.price_cents)}${
-            r.plus_extra ? ' · in Extra' : r.plus_classics ? ' · in Classics' : ''}</button></li>`)
-          .join('');
+        const found: string[] = [];
+        if (q) {
+          for (const r of rows) {
+            if (found.length === MATCHES) break;
+            if (!r.name.toLowerCase().includes(q) || chosen.includes(r.id)) continue;
+            found.push(`<li><button data-add="${esc(r.id)}">${esc(r.name)} — ${price(r.price_cents)}${
+              r.plus_extra ? ' · in Extra' : r.plus_classics ? ' · in Classics' : ''}</button></li>`);
+          }
+        }
+        el('suggest').innerHTML = found.join('');
       }
 
       app.addEventListener('click', (e) => {
@@ -237,7 +300,7 @@ const headline = [...inExtra]
 
       el('q').addEventListener('input', (e) => {
         query = (e.target as HTMLInputElement).value;
-        render();
+        renderSuggest();      // the verdict and the totals do not depend on it
       });
 
       el('tiers').addEventListener('change', (e) => {

@@ -1,122 +1,680 @@
 ---
 import Base from '../layouts/Base.astro';
-import { artUrl, decode, price } from '../lib/index';
-import { gameUrl } from '../lib/detail';
-import raw from '../../public/index.json';
-import art from '../art.json';
-
-const { meta, rows } = decode(raw);
 const base = import.meta.env.BASE_URL;
-// Row order is popularity order, and it decides which games have a
-// prerendered page, so the rank is taken before any sorting.
-const rankOf = new Map(rows.map((r, i) => [r.id, i]));
-
-/** A discount shallower than this is not worth the front page. 40% is where
- *  the store's own "big sale" banding starts. */
-const DEAL_FLOOR_PCT = 40;
-
-const free = rows.filter((r) => r.is_free || r.price_cents === 0)
-  .sort((a, b) => b.quality - a.quality).slice(0, 12);
-const inPlus = rows.filter((r) => r.plus_extra);
-const plusValue = inPlus.reduce((n, r) => n + r.base_cents, 0);
-const deals = rows.filter((r) => !r.plus_extra && !r.is_free && r.discount_pct >= DEAL_FLOOR_PCT)
-  .sort((a, b) => b.quality - a.quality).slice(0, 10);
-const couch = rows.filter((r) => (r.local_players ?? 0) >= 2).length;
 ---
-<Base title="new-game-plus — what to play on a new PS5"
-      tagline="You just bought a PS5. You don't have to buy games yet.">
-  <h1>You just bought a PS5.<br />You don't have to buy games yet.</h1>
+<Base title="new-game-plus — every PS5 and PS4 game, ranked"
+      tagline="Filter by players on one console, price, PS+ status and more.">
+  <h1>What is worth buying today?</h1>
   <p class="lede">
-    Before anyone sells you anything: there are free games worth your time, and if you
-    have PlayStation Plus Extra you already own a large library. Here is what that
-    actually looks like today.
+    Every PS5 and PS4 game the store lists, with its price, its discount and how good
+    it actually is. Everything loads once, then filtering happens in your browser. The
+    ranking is computed here from published components — move the sliders and watch it
+    change, then share the link.
   </p>
 
-  <section>
-    <h2>Free, forever, no subscription</h2>
-    <p class="note">
-      Free-to-play games cost nothing for everyone, permanently. They are not the same as
-      the monthly PS Plus games, which you keep only while you subscribe.
-    </p>
-    <ul class="grid">
-      {free.map((g) => (
-        <li class="card">
-          {artUrl(art[g.id], 200) && (
-            <img class="cardart" src={artUrl(art[g.id], 200)} alt="" width="236" height="236"
-                 loading="lazy" decoding="async" />
-          )}
-          <a href={gameUrl(base, g.id, rankOf.get(g.id)!)}>{g.name}</a>
-          <span class="meta">
-            <span class="free">Free</span>
-            {g.genres[0] && <> · {g.genres[0]}</>}
-          </span>
-        </li>
-      ))}
-    </ul>
-  </section>
+  <div id="app" data-src={`${base}index.json`} data-base={base}>
+    <p class="loading">Loading the catalogue…</p>
+  </div>
 
-  <section>
-    <h2>If you have PS Plus Extra</h2>
-    <p>
-      <strong>{inPlus.length}</strong> games in this snapshot are in the Extra catalogue —
-      about <strong>${(plusValue / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>{' '}
-      at list price. Do not buy these; you can already play them.
-    </p>
-    <p class="note">
-      This counts only games currently on the store's deals list, so it is a floor, not
-      the whole catalogue.
-    </p>
-  </section>
+  <!-- Global because the island builds this markup at runtime, where a scoped
+       style never reaches it. Only this page loads these rules. -->
+  <style is:global>
+    .explore { display: grid; gap: var(--space-lg); align-items: start; }
+    /* A grid item's default min-width is `auto`, so it refuses to shrink below
+       its content and the results table pushes the whole page sideways instead
+       of scrolling inside its own box. */
+    .explore > * { min-width: 0; }
+    @media (min-width: 60rem) { .explore { grid-template-columns: 17rem 1fr; } }
 
-  <section>
-    <h2>Then, actual deals</h2>
-    <p class="note">
-      Games not in the catalogue, at least 40% off, ranked by how good the game is rather
-      than by discount size.
-    </p>
-    <ol class="rows">
-      {deals.map((g) => (
-        <li>
-          <a href={gameUrl(base, g.id, rankOf.get(g.id)!)}>{g.name}</a>
-          <span class="meta">
-            {price(g.price_cents)} <s>{price(g.base_cents)}</s> · −{g.discount_pct}%
-            {g.quality > 0 && <> · quality {Math.round(g.quality)}</>}
-            {(g.local_players ?? 0) >= 2 && <> · {g.local_players}-player couch</>}
-          </span>
-        </li>
-      ))}
-    </ol>
-    <div class="presets">
-      <a href={`${base}explore/?players=2&price=under20`}>Couch co-op under $20</a>
-      <a href={`${base}explore/?price=free&evidence=medium`}>Free and actually good</a>
-      <a href={`${base}explore/?plus=extra`}>Already in PS+</a>
-      <a href={`${base}explore/`}>Explore everything →</a>
-    </div>
-  </section>
+    .facets { background: var(--surface); border: 1px solid var(--line);
+              border-radius: var(--radius); padding: var(--space-md); }
+    @media (min-width: 60rem) { .facets { position: sticky; top: var(--space-md); } }
+    .facets h2, .facets summary { font-size: 0.75rem; text-transform: uppercase;
+              letter-spacing: 0.06em; color: var(--muted); margin: var(--space-md) 0 var(--space-sm);
+              cursor: default; }
+    .facets summary { cursor: pointer; }
+    .facets label { display: flex; gap: var(--space-sm); align-items: baseline;
+                    font-size: 0.9rem; padding: 0.15rem 0; }
+    .facets .count { margin-left: auto; color: var(--muted); font-size: 0.8rem;
+                     font-variant-numeric: tabular-nums; }
+    .facets .cover { color: var(--muted); font-size: 0.78rem; margin: 0.35rem 0 0; }
+    .facets input[type=search], .facets select { width: 100%; padding: 0.4rem 0.55rem;
+              font: inherit; font-size: 0.9rem; border: 1px solid var(--line);
+              border-radius: var(--radius-sm); background: var(--bg); color: var(--fg); }
+    .facets .fieldlabel { display: block; font-size: 0.75rem; text-transform: uppercase;
+              letter-spacing: 0.06em; color: var(--muted); margin-bottom: var(--space-xs); }
 
-  <p class="note">
-    {meta.count.toLocaleString()} games in this index · {couch} playable with someone on
-    the same couch · updated {meta.generated_at?.slice(0, 10) ?? 'never'}
-  </p>
-
-  <style>
-    section { margin: 2.5rem 0; }
-    h2 { font-size: 1.3rem; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
-    .grid { list-style: none; padding: 0; display: grid; gap: 0.6rem;
-            grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); margin-top: 1rem; }
-    .card { background: var(--surface); border: 1px solid var(--line);
-            border-radius: 8px; padding: 0.75rem 0.9rem; }
-    .card a { color: inherit; text-decoration: none; font-weight: 600; }
-    .card a:hover { color: var(--accent); text-decoration: underline; }
-    /* Tighter than the shared rules, on this page only. */
-    .meta { margin-top: 0.2rem; }
-    .rows li { margin: 0.5rem 0; }
-    /* Named entry points into the explorer. A newcomer does not know which
-       filter to touch, so the front page hands them four that already work. */
-    .presets { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
-    .presets a { border: 1px solid var(--line); border-radius: 999px;
-                 padding: 0.25rem 0.75rem; font-size: 0.9rem;
-                 color: inherit; text-decoration: none; }
+    .presets { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin: var(--space-md) 0; }
+    .presets a { border: 1px solid var(--line); border-radius: 999px; padding: 0.25rem 0.75rem;
+                 font-size: 0.85rem; color: inherit; text-decoration: none; }
     .presets a:hover { border-color: var(--accent); color: var(--accent); }
+    .presets a[aria-current=page] { background: var(--accent); color: var(--on-accent);
+                                    border-color: var(--accent); }
+
+    .chips { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+    .chips button { border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2);
+                    color: inherit; font: inherit; font-size: 0.8rem; cursor: pointer;
+                    padding: 0.15rem 0.6rem; }
+    .chips button:hover { border-color: var(--accent); color: var(--accent); }
+
+    .count { color: var(--muted); font-size: 0.9rem; margin: 0 0 var(--space-sm); }
+
+    .unrated { color: var(--muted); font-size: 0.85rem; margin: 0 0 var(--space-sm);
+               border-left: 2px solid var(--line); padding-left: var(--space-sm); }
+    .unrated button { background: none; border: 0; padding: 0; font: inherit;
+                      color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+    /* Seven columns do not fit a phone, and the old page let the whole document
+       slide sideways instead. The table scrolls inside its own box below the
+       breakpoint where the sidebar stops sitting beside it.
+
+       Only below it: `overflow-x: auto` forces `overflow-y` to `auto` too, and
+       that makes the sticky header stick to this box rather than the viewport.
+       Wide screens are where the long scrolls happen, so they keep the sticky
+       header and never need the sideways scroll.
+
+       tabindex + role make the scrollable region reachable by keyboard, which
+       an overflow container is not on its own. */
+    @media (max-width: 60rem) {
+      .tablewrap { overflow-x: auto; }
+      table.results { min-width: 34rem; }
+    }
+
+    /* border-collapse: collapse leaves collapsed borders behind when a sticky
+       header travels, so separate + a box-shadow rule instead. */
+    table.results { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.92rem; }
+    table.results thead th { position: sticky; top: 0; background: var(--surface);
+                             text-align: left; padding: var(--space-sm); z-index: 1;
+                             box-shadow: inset 0 -1px 0 var(--line); white-space: nowrap; }
+    table.results th button { background: none; border: 0; color: var(--muted); cursor: pointer;
+                              font: inherit; font-size: 0.75rem; text-transform: uppercase;
+                              letter-spacing: 0.06em; padding: 0; }
+    table.results th[aria-sort] button { color: var(--accent); font-weight: 700; }
+    table.results td { padding: var(--space-sm); border-bottom: 1px solid var(--line);
+                       vertical-align: top; }
+    table.results tbody tr:hover { background: var(--surface-2); }
+    /* Skips layout/paint for off-screen rows. `auto` makes the browser remember
+       each row's height, so the scrollbar does not jump. This is what makes a
+       few thousand appended rows stay cheap to scroll past. */
+    table.results tbody tr { content-visibility: auto; contain-intrinsic-size: auto 52px; }
+    table.results .right { text-align: right; }
+    /* 72px square. PS art is 1024x1024 on every sampled cover, so the box is
+       square and reserved by width/height -- nothing shifts when it lands.
+       Below the ~90px legibility floor cited for grids, which is fine: the
+       title is real text six pixels away, so the cover is a recognition cue
+       rather than the only identifier. */
+    .withcover { display: flex; gap: var(--space-sm); align-items: flex-start; }
+    .cover72 { width: 72px; height: 72px; flex: none; border-radius: var(--radius-sm);
+               object-fit: cover; background: var(--surface-2); }
+    /* On a phone the cover is competing with the title for a very short line.
+       The title wins: it is the thing you are reading. */
+    @media (max-width: 60rem) { .cover72 { width: 48px; height: 48px; } }
+    .compact .cover72 { width: 40px; height: 40px; }
+    table.results .title { color: inherit; text-decoration: none; font-weight: 600; }
+    table.results .title:hover { color: var(--accent); text-decoration: underline; }
+    .rowtags { display: block; margin-top: 0.15rem; }
+    .rowtags .tag { margin-left: 0; margin-right: 0.35rem; }
+    .compact table.results td { padding: 0.25rem var(--space-sm); }
+    .compact .rowtags { display: none; }
+
+    .toolbar { display: flex; align-items: baseline; gap: var(--space-md); flex-wrap: wrap; }
+    .toolbar .density { margin-left: auto; font-size: 0.85rem; color: var(--muted); }
+    .toolbar .density button { background: none; border: 1px solid var(--line); color: inherit;
+                               font: inherit; font-size: 0.8rem; cursor: pointer;
+                               border-radius: var(--radius-sm); padding: 0.1rem 0.5rem; }
+    .toolbar .density button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+
+    /* The end of the list. The button is the real control -- it is focusable
+       and it says what it will do -- and the scroll observer just presses it
+       for you. Centred so it reads as a boundary rather than a stray widget. */
+    .tail { text-align: center; padding: var(--space-md) 0 var(--space-lg); }
+    .tail button { background: var(--surface); border: 1px solid var(--line); color: inherit;
+                   font: inherit; font-size: 0.9rem; cursor: pointer;
+                   border-radius: var(--radius); padding: 0.5rem 1.1rem; }
+    .tail button:hover { border-color: var(--accent); color: var(--accent); }
+    .tail .done { color: var(--muted); font-size: 0.85rem; }
+
+    .sliders { display: grid; gap: 0.4rem; margin-top: var(--space-md); }
+    .sliders label { font-size: 0.85rem; color: var(--muted); display: block; }
+    .sliders input { width: 100%; }
+    .sliders.off { opacity: 0.5; }
   </style>
+
+  <script>
+    import { artUrl, esc, loadIndex, price, resolveArt, type Row } from '../lib/index';
+    import { gameUrl } from '../lib/detail';
+    import { applyFilters, facetCounts, playtimeKnown } from '../lib/filters';
+    import { finalScore } from '../lib/score';
+    import { SORT_LABELS, sortRows } from '../lib/sorting';
+    import { DEFAULTS, fromSearch, toSearch, type ExploreState } from '../lib/urlstate';
+
+    const app = document.getElementById('app')!;
+    const BASE = app.dataset.base!;
+    const YEAR = new Date().getFullYear();
+
+    /** Rows appended per step. Not 20: at this row height 20 rows is under one
+     *  viewport on a desktop, so the sentinel would still be on screen after an
+     *  append and the observer would fire again immediately. 50 clears the fold
+     *  in one step while staying small enough that appending is imperceptible. */
+    const BATCH = 50;
+
+    /** How far below the fold the sentinel starts loading. One screen of lead
+     *  time, so the next rows are already there by the time you reach them. */
+    const LOOKAHEAD = '600px';
+
+    const index = await loadIndex(app);
+    if (index) {
+      const { meta, rows } = index;
+      // Weights ship inside the payload and are never seeded with numbers
+      // here: a second copy is how the site and the crawler come to disagree.
+      const weights = meta.weights;
+      // Row order is popularity order and decides whether a game has a
+      // prerendered page, so the rank is captured before any sorting.
+      const rankOf = new Map(rows.map((r, i) => [r.id, i]));
+
+      let state: ExploreState = fromSearch(location.search);
+
+      /** A weight stays at the -1 sentinel until the user actually moves that
+       *  slider, and toSearch() omits negatives. That is what keeps an
+       *  unfiltered URL empty and lets a preset's href match exactly -- seeding
+       *  state.w from the payload instead would stamp ?wq=45&wd=30&wv=25 onto
+       *  every link the site produces. */
+      const effective = () => ({
+        quality: state.w.quality < 0 ? weights.final.quality : state.w.quality,
+        deal: state.w.deal < 0 ? weights.final.deal : state.w.deal,
+        value: state.w.value < 0 ? weights.final.value : state.w.value,
+      });
+
+      /** Cover art, positional against `rows`: art[i] belongs to rows[i]. The
+       *  ids are already in index.json, so the served manifest carries none --
+       *  measured, that is 439 KB instead of 640 KB. Empty until the deferred
+       *  fetch lands below, and every row renders correctly without it. */
+      let art: (string | null)[] = [];
+
+      /** The current result set and how much of it is in the DOM. Held here
+       *  rather than recomputed per append: filtering and sorting 12,000 rows
+       *  to show 50 more of an answer we already have is pure waste. */
+      let filtered: Row[] = [];
+      let sorted: Row[] = [];
+      let shown = 0;
+      let live = weights;
+
+      // Validated on read: an unrecognised stored value would otherwise leave
+      // both density buttons unpressed. Same lesson as resolveTheme.
+      let compact = false;
+      try { compact = localStorage.getItem('ngp:density') === 'compact'; } catch { /* private mode */ }
+
+      const knownHours = playtimeKnown(rows);
+      const onSale = rows.filter((r) => r.discount_pct > 0).length;
+      const freeCount = rows.filter((r) => r.is_free || r.price_cents === 0).length;
+      const genres = [...new Set(rows.flatMap((r) => r.genres))].sort();
+
+      const COLUMNS = ['name', 'price', 'off', 'score', 'quality', 'players', 'hours'] as const;
+      type WeightKey = 'quality' | 'deal' | 'value';
+      const WEIGHTS = [['quality', 'Game quality'], ['deal', 'Deal depth'],
+                       ['value', 'Value per dollar']] as const;
+
+      const FACETS = [
+        { key: 'price' as const, label: 'Price',
+          values: [['free', 'Free'], ['under5', 'Under $5'], ['under10', 'Under $10'],
+                   ['under20', 'Under $20'], ['under40', 'Under $40'], ['sale', 'On sale']] },
+        { key: 'players' as const, label: 'Players on one console',
+          values: [['2', '2 or more'], ['3', '3 or more'], ['4', '4 or more']] },
+        { key: 'plus' as const, label: 'PS Plus',
+          values: [['extra', 'In Extra'], ['classics', 'In Classics'], ['none', 'Not in PS+']] },
+        { key: 'platform' as const, label: 'Platform', values: [['PS5', 'PS5'], ['PS4', 'PS4']] },
+      ];
+
+      const ESRB_VALUES = [['ESRB_EVERYONE', 'Everyone'], ['ESRB_EVERYONE_10', 'Everyone 10+'],
+                          ['ESRB_TEEN', 'Teen'], ['ESRB_MATURE', 'Mature 17+']];
+
+      const PRESETS: [string, string][] = [
+        ['', 'Everything'],
+        ['players=2&price=under20', 'Couch co-op under $20'],
+        ['price=free&evidence=medium', 'Free and actually good'],
+        ['plus=extra', 'Already in PS+'],
+        ['price=sale&sort=off&evidence=medium', 'Big discount, high quality'],
+        ['sort=hours&dir=asc', 'Shortest first'],
+      ];
+
+      // The search field is rendered ONCE, outside the re-rendered region.
+      // renderFacets() rebuilds #facetgroups with innerHTML on every keystroke,
+      // and rebuilding the input under the user's cursor destroys the element
+      // they are typing into -- the caret jumps and focus is lost.
+      app.innerHTML = `
+        <aside class="facets" id="facets">
+          <label class="fieldlabel" for="q">Search games</label>
+          <input type="search" id="q" value="${esc(state.q)}"
+                 placeholder="Search ${rows.length.toLocaleString()} games" />
+          <p class="cover">${onSale.toLocaleString()} on sale today,
+             ${freeCount.toLocaleString()} free to play. Prices are from the
+             crawl on ${esc(meta.generated_at?.slice(0, 10) ?? 'an unknown date')}.</p>
+          <div id="facetgroups"></div>
+          <div class="sliders" id="sliders">
+            <p class="cover" id="slidernote"></p>
+            ${(() => { const w = effective(); return WEIGHTS.map(([key, label]) => `
+              <label>${label} — <span data-weightval="${key}">${Math.round(w[key] * 100)}</span>
+                <input type="range" data-weight="${key}" min="0" max="100"
+                       value="${Math.round(w[key] * 100)}" />
+              </label>`).join(''); })()}
+          </div>
+        </aside>
+        <div>
+          <div class="presets" id="presets"></div>
+          <div class="chips" id="chips"></div>
+          <div class="toolbar">
+            <p class="count" id="count" role="status"></p>
+            <span class="density">
+              <button type="button" data-density="comfortable">Comfortable</button>
+              <button type="button" data-density="compact">Compact</button>
+            </span>
+          </div>
+          <p class="unrated" id="unrated" hidden></p>
+          <div class="tablewrap" tabindex="0" role="region"
+               aria-label="Results table, scrolls sideways on a narrow screen">
+            <table class="results">
+              <caption class="visually-hidden">
+                Games matching your filters. Column headers with buttons sort the table.
+              </caption>
+              <thead><tr id="head"></tr></thead>
+              <tbody id="results"></tbody>
+            </table>
+          </div>
+          <div class="tail" id="tail">
+            <button type="button" id="more"></button>
+            <p class="done" id="done" hidden></p>
+          </div>
+        </div>`;
+
+      const el = (id: string) => document.getElementById(id)!;
+
+      /** Positional lookup, and the host the manifest strips is re-added only
+       *  where there is none -- not every asset is on that CDN. */
+      const cover = (rank: number) => {
+        const url = artUrl(resolveArt(art[rank]), 72);
+        return url
+          ? `<img class="cover72" src="${esc(url)}" alt="" width="72" height="72"
+                  loading="lazy" decoding="async" />`
+          : '<span class="cover72" aria-hidden="true"></span>';
+      };
+
+      const applyDensity = (choice: string) => {
+        compact = choice === 'compact';
+        app.className = compact ? 'explore compact' : 'explore';
+        for (const b of app.querySelectorAll('[data-density]')) {
+          b.setAttribute('aria-pressed', String((b as HTMLElement).dataset.density === choice));
+        }
+      };
+
+      // Safari throws SecurityError above 100 replaceState calls per 30 s and a
+      // slider drag fires `input` continuously, so URL writes are throttled.
+      // Rendering stays immediate; only the history write waits.
+      let pending = 0;
+      const syncUrl = () => {
+        clearTimeout(pending);
+        pending = window.setTimeout(() => {
+          const search = toSearch(state);
+          history.replaceState(null, '', search ? `?${search}` : location.pathname);
+        }, 310);
+      };
+
+      function renderHead() {
+        el('head').innerHTML = COLUMNS.map((column) => {
+          // Exactly one th carries aria-sort; the rest omit it entirely,
+          // because "none" is the ARIA default and only adds verbosity.
+          const active = state.sort === column;
+          const attr = active ? ` aria-sort="${state.desc ? 'descending' : 'ascending'}"` : '';
+          const arrow = active ? (state.desc ? ' ▼' : ' ▲') : '';
+          return `<th scope="col"${attr}${column === 'name' ? '' : ' class="right"'}>
+            <button type="button" data-sort="${column}">${esc(SORT_LABELS[column])}${arrow}</button>
+          </th>`;
+        }).join('');
+      }
+
+      const radios = (name: string, values: readonly (readonly [string, string])[],
+                      selected: string, counts?: Map<string, number>) =>
+        values.map(([value, label]) => `
+          <label>
+            <input type="radio" name="${name}" value="${esc(value)}"
+                   ${selected === value ? 'checked' : ''} />
+            ${esc(label)}${counts ? `<span class="count">${counts.get(value)!.toLocaleString()}</span>` : ''}
+          </label>`).join('');
+
+      // A <summary> is not a label, so the genre select carries its own
+      // aria-label -- without it a screen reader announces an unnamed combobox.
+      function renderFacets() {
+        const groups = FACETS.map((facet) =>
+          `<h2>${esc(facet.label)}</h2>`
+          + radios(facet.key, facet.values, state[facet.key] as string,
+                   facetCounts(rows, state, facet.key, facet.values.map(([v]) => v)))
+        ).join('');
+
+        el('facetgroups').innerHTML = `
+          ${groups}
+          <details><summary>Genre</summary>
+            <select id="genre" aria-label="Genre">
+              <option value="">Any genre</option>
+              ${genres.map((g) => `<option${state.genre === g ? ' selected' : ''}>${esc(g)}</option>`).join('')}
+            </select>
+          </details>
+          <details><summary>Well reviewed</summary>
+            ${radios('minQuality', [['0', 'Any'], ['60', '60 or better'], ['75', '75 or better']],
+                     String(state.minQuality))}
+            <p class="cover">Scored from store ratings and, where one exists, a critic score.
+               Playtime is known for only ${knownHours.toLocaleString()} of
+               ${rows.length.toLocaleString()} games, so it is a column you can sort by rather
+               than a filter.</p>
+          </details>
+          <details><summary>Age rating</summary>
+            ${radios('esrb', ESRB_VALUES, state.esrb)}
+          </details>`;
+      }
+
+      function renderChips() {
+        const active: [string, string][] = [];
+        for (const facet of FACETS) {
+          const value = state[facet.key] as string;
+          if (value) {
+            const label = facet.values.find(([v]) => v === value)?.[1] ?? value;
+            active.push([facet.key, `${facet.label}: ${label}`]);
+          }
+        }
+        if (state.genre) active.push(['genre', `Genre: ${state.genre}`]);
+        if (state.esrb) active.push(['esrb', `Rated: ${state.esrb.replace('ESRB_', '')}`]);
+        if (state.minQuality) active.push(['minQuality', `Quality ${state.minQuality}+`]);
+        // Shown only once it differs from the default, but then it must be
+        // shown: lifting the evidence floor changes what the list means, and a
+        // chip is how you put it back.
+        if (state.minEvidence !== DEFAULTS.minEvidence) {
+          active.push(['minEvidence', 'Including unrated games']);
+        }
+        if (state.q) active.push(['q', `“${state.q}”`]);
+
+        el('chips').innerHTML = active.length === 0 ? '' :
+          active.map(([key, label]) =>
+            `<button type="button" data-clear="${esc(key)}">${esc(label)} ✕</button>`).join('')
+          + '<button type="button" data-clear="all">Clear all</button>';
+      }
+
+      /** One row. Split out of the render because it is now called from two
+       *  places -- a full repaint and an append -- and two copies of this
+       *  template would drift the moment a column changed. */
+      function rowHtml(g: Row) {
+        const rank = rankOf.get(g.id)!;
+        // Hoisted so the template interpolates no raw payload field --
+        // islands.test.ts greps for exactly that, and cover() escapes inside.
+        const art72 = cover(rank);
+        return `
+          <tr>
+            <td>
+              <div class="withcover">
+                ${art72}
+                <span>
+              <a class="title" href="${esc(gameUrl(BASE, g.id, rank))}">${esc(g.name)}</a>
+              <span class="rowtags">
+                ${g.plus_extra ? '<span class="tag good">PS+ Extra</span>' : ''}
+                ${g.plus_classics ? '<span class="tag good">PS+ Classics</span>' : ''}
+                ${(g.local_players ?? 0) >= 2
+                  ? `<span class="tag">${g.local_players}-player couch</span>` : ''}
+                ${g.vs_historical_min === 100 ? '<span class="tag good">lowest we have recorded</span>' : ''}
+                ${g.psvr2 ? `<span class="tag">PS VR2 ${esc(g.psvr2)}</span>` : ''}
+              </span>
+                </span>
+              </div>
+            </td>
+            <td class="right">${g.price_cents === 0
+              ? '<span class="free">Free</span>'
+              : `${price(g.price_cents)}${g.discount_pct > 0
+                  ? ` <s>${price(g.base_cents)}</s>` : ''}`}</td>
+            <td class="right">${g.discount_pct > 0 ? `−${g.discount_pct}%` : '—'}</td>
+            <td class="right">${Math.round(finalScore(g, live, { hasPlusExtra: state.hasPlus }, YEAR))}</td>
+            <td class="right">${Math.round(g.quality)}</td>
+            <td class="right">${g.local_players ?? '—'}</td>
+            <td class="right">${g.hours_main ? `${g.hours_main}h` : '—'}</td>
+          </tr>`;
+      }
+
+      /** Scroll-to-append. The button is the real control -- focusable, and it
+       *  says what it will do -- and this presses it when the end of the list
+       *  comes within a screen of the viewport. Null where the browser has no
+       *  observer, which leaves the button working on its own. */
+      const io = 'IntersectionObserver' in window
+        ? new IntersectionObserver((entries) => {
+            if (entries.some((e) => e.isIntersecting)) appendBatch();
+          }, { rootMargin: LOOKAHEAD })
+        : null;
+
+      /** The end-of-list controls, and the one place the observer is armed. */
+      function renderTail() {
+        const left = sorted.length - shown;
+        const more = el('more') as HTMLButtonElement;
+        more.hidden = left <= 0;
+        more.textContent = `Show ${Math.min(BATCH, left).toLocaleString()} more`
+          + ` (${left.toLocaleString()} left)`;
+        const done = el('done');
+        done.hidden = left > 0 || sorted.length === 0;
+        done.textContent = `That is all ${sorted.length.toLocaleString()} of them.`;
+
+        // Re-arming belongs here rather than in its own function: every moment
+        // the tail changes is exactly a moment the observer must be re-armed,
+        // and splitting them lets the button be updated without it.
+        //
+        // Not redundant, either. The callback fires on a *change* of
+        // intersection, so a button still on screen after appending 50 rows --
+        // a tall window, or a filter down to 60 rows -- would never fire again
+        // and the list would stall. Dropping and re-adding forces a fresh
+        // initial callback.
+        if (io) {
+          io.disconnect();
+          if (left > 0) io.observe(more);
+        }
+      }
+
+      /** The evidence floor is a default nobody chose, and it hides every game
+       *  the crawl has not rated yet. Left silent, searching for a real game we
+       *  happen to know nothing about returns "No games match", which reads as
+       *  "the store does not sell it". So say how many are behind the floor and
+       *  offer the one click that lifts it. */
+      function renderUnrated() {
+        const box = el('unrated');
+        const all = state.minEvidence === 'none'
+          ? sorted.length
+          : applyFilters(rows, { ...state, minEvidence: 'none' }).length;
+        const hidden = all - sorted.length;
+        box.hidden = hidden <= 0;
+        if (hidden <= 0) return;
+        const one = hidden === 1;
+        box.innerHTML =
+          `${hidden.toLocaleString()} more ${one ? 'game matches' : 'games match'} but ${
+            one ? 'has' : 'have'} no rating yet, so ${one ? 'it is' : 'they are'} not shown.
+           <button type="button" id="showunrated">Show ${one ? 'it' : 'them'} anyway</button>`;
+      }
+
+      /** Repaint the rows already on screen. Used when the filter set has not
+       *  changed but their markup has -- which is exactly one case: cover art
+       *  arriving after first paint. */
+      function paint() {
+        el('results').innerHTML = sorted.length === 0
+          ? `<tr><td colspan="${COLUMNS.length}" class="note">
+               No games match. Try clearing a filter above.</td></tr>`
+          : sorted.slice(0, shown).map(rowHtml).join('');
+        renderTail();
+      }
+
+      /** Add the next BATCH to the DOM without touching what is already there.
+       *  The old page rebuilt the whole tbody on every "show more", so the
+       *  fifth press re-serialised 1,000 rows to add 200. */
+      function appendBatch() {
+        if (shown >= sorted.length) return;
+        const next = sorted.slice(shown, shown + BATCH);
+        shown += next.length;
+        el('results').insertAdjacentHTML('beforeend', next.map(rowHtml).join(''));
+        renderTail();
+      }
+
+      /** Re-rank the rows that already match. This is the whole of what a
+       *  weight slider changes: `matches()` never reads the weights, so the
+       *  matching set is untouched and only the order moves.
+       *
+       *  `shown` is deliberately kept. Resetting it here collapsed the page
+       *  back to 50 rows mid-drag, which yanks the ground out from under
+       *  someone who had scrolled -- and it does not even save work, because
+       *  the sort is what costs, not the rows on screen. */
+      function resort() {
+        // The sliders are the `final` weights, renormalised so they always sum
+        // to 1. Everything else in `weights` comes from index.json untouched.
+        const w = effective();
+        const total = w.quality + w.deal + w.value || 1;
+        live = {
+          ...weights,
+          final: { quality: w.quality / total, deal: w.deal / total, value: w.value / total },
+        };
+        sorted = sortRows(filtered, state, live, rankOf, YEAR);
+        shown = Math.min(Math.max(shown, BATCH), sorted.length);
+        paint();
+      }
+
+      /** A slider fires `input` continuously, and one sort is ~18 ms over the
+       *  full catalogue -- fast enough to feel live, far too slow to run sixty
+       *  times a second. One re-rank per frame is both. */
+      let queuedSort = 0;
+      const resortSoon = () => {
+        cancelAnimationFrame(queuedSort);
+        queuedSort = requestAnimationFrame(resort);
+      };
+
+      /** Re-run the filters, then re-rank. Everything a search, facet or sort
+       *  change touches, and nothing a weight change does. */
+      function renderRows() {
+        filtered = applyFilters(rows, state);
+        shown = 0;                    // a new result set starts at the top
+        resort();
+        renderHead();
+
+        // role="status" announces on change, so it says what the *set* is and
+        // is written only here. Putting the running "showing N" in it would
+        // make a screen reader read the page again every time you scrolled --
+        // and re-announce the whole page on every tick of a slider drag.
+        el('count').textContent =
+          `${sorted.length.toLocaleString()} game${sorted.length === 1 ? '' : 's'}`
+          + ` · sorted by ${SORT_LABELS[state.sort]}, ${state.desc ? 'high to low' : 'low to high'}`;
+
+        el('sliders').classList.toggle('off', state.sort !== 'score');
+        el('slidernote').textContent = state.sort === 'score'
+          ? 'These three weights drive the Score column.'
+          : `Sorting by ${SORT_LABELS[state.sort]}, so these are not in use.`;
+        syncUrl();
+      }
+
+      /** Everything downstream of a filter change. Facet counts and the unrated
+       *  count both depend only on the filter state -- `matches()` never reads
+       *  the weights -- so a slider drag skips all of this and calls resort()
+       *  alone. Keeping the sliders and the search box outside #facetgroups
+       *  also means neither is destroyed under the user's finger mid-gesture. */
+      function render() {
+        renderFacets();
+        renderChips();
+        el('presets').innerHTML = PRESETS.map(([search, label]) => `
+          <a href="?${search}"${toSearch(state) === search ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('');
+        renderRows();
+        renderUnrated();
+      }
+
+      /** A filter change is a discrete commit, so Back walks to it. */
+      const commit = () => {
+        history.pushState(null, '', `?${toSearch(state)}`);
+        render();
+      };
+
+      el('head').addEventListener('click', (e) => {
+        const column = (e.target as HTMLElement).closest('button')?.dataset.sort;
+        if (!column) return;
+        // Clicking the active column flips direction; a new column starts
+        // descending, which is what "best first" means everywhere except name.
+        state = state.sort === column
+          ? { ...state, desc: !state.desc }
+          : { ...state, sort: column, desc: column !== 'name' };
+        commit();
+      });
+
+      let typing = 0;
+      el('facets').addEventListener('input', (e) => {
+        const target = e.target as HTMLInputElement;
+        if (target.id === 'q') {
+          clearTimeout(typing);
+          const value = target.value;
+          typing = window.setTimeout(() => { state = { ...state, q: value }; render(); }, 200);
+        } else if (target.dataset.weight) {
+          const key = target.dataset.weight as WeightKey;
+          state = { ...state, w: { ...state.w, [key]: Number(target.value) / 100 } };
+          app.querySelector(`[data-weightval=${key}]`)!.textContent = target.value;
+          resortSoon();   // weights change the order, nothing else
+          syncUrl();
+        }
+      });
+
+      el('facets').addEventListener('change', (e) => {
+        const target = e.target as HTMLInputElement | HTMLSelectElement;
+        if (target.id === 'genre') state = { ...state, genre: target.value };
+        else if (target.name === 'minQuality') state = { ...state, minQuality: Number(target.value) };
+        else if (target.name && target.name !== 'q') {
+          state = { ...state, [target.name]: target.value } as ExploreState;
+        } else return;
+        commit();
+      });
+
+      el('chips').addEventListener('click', (e) => {
+        const key = (e.target as HTMLElement).closest('button')?.dataset.clear;
+        if (!key) return;
+        state = key === 'all'
+          ? { ...DEFAULTS, w: state.w, sort: state.sort, desc: state.desc }
+          // Clearing a facet is restoring its default, and DEFAULTS already
+          // holds every one of them -- including the two that are not the empty
+          // string (minQuality is 0, and an empty minEvidence would read as
+          // "no floor", the opposite of putting the floor back).
+          : { ...state, [key]: DEFAULTS[key as keyof ExploreState] } as ExploreState;
+        commit();
+      });
+
+      el('unrated').addEventListener('click', (e) => {
+        if (!(e.target as HTMLElement).closest('#showunrated')) return;
+        state = { ...state, minEvidence: 'none' };
+        commit();
+      });
+
+      app.addEventListener('click', (e) => {
+        const choice = (e.target as HTMLElement).closest('button')?.dataset.density;
+        if (!choice) return;
+        try { localStorage.setItem('ngp:density', choice); } catch { /* private mode */ }
+        applyDensity(choice);
+      });
+
+      el('more').addEventListener('click', appendBatch);
+
+      addEventListener('popstate', () => {
+        state = fromSearch(location.search);
+        render();
+      });
+
+      render();
+      applyDensity(compact ? 'compact' : 'comfortable');
+
+      // Cover art, fetched AFTER the table is already on screen. A separate
+      // file because the asset hash is an irreducible 48 hex characters, so
+      // gzip cannot shrink it and putting the URLs in index.json would push it
+      // past the payload budget. A failure here is silent by design: the page
+      // already works without it.
+      fetch(`${BASE}art.json`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((loaded) => {
+          // Positional, so a length mismatch means the two files came from
+          // different crawls and every cover after the first gap would be on
+          // the wrong game. Showing none beats showing them shuffled.
+          if (!Array.isArray(loaded) || loaded.length !== rows.length) return;
+          art = loaded;
+          paint();
+        })
+        .catch(() => { /* the table is already usable */ });
+    }
+  </script>
 </Base>

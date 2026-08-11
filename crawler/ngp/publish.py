@@ -89,29 +89,66 @@ def render(games, weights, generated_at=None) -> tuple[bytes, bytes, dict]:
         "over_budget": len(packed) > GZIP_BUDGET_BYTES}
 
 
-# How many rows get a *served* art manifest. Rows are in popularity order, so
-# the head is what anyone actually browses; 2,000 rows is ~69 KB.
-ART_HEAD_ROWS = 2000
+# Every sampled asset is on this host, so it is a constant the served manifest
+# does not have to repeat 12,000 times. A URL that is not on it is kept whole
+# and the client re-adds the host only where there is none.
+ART_HOST = "https://image.api.playstation.com/"
 
 
-def save_art(path, games, limit=None) -> tuple[int, int]:
-    """Cover-art URLs keyed by product id. Returns `(rows, gzip_bytes)`.
+def _write(path, body: bytes) -> int:
+    """Write, creating the directory, and return the gzipped size.
 
-    Without `limit` this is the build-input file outside `public/`, which the
-    static pages read to bake in `<img>` tags at no cost to the client. With
-    `limit` it is the served head slice the explorer fetches after first paint,
-    because a runtime island cannot import a build file.
+    Level 6, not 9: this number is only reported, never stored. On a 1 MB body
+    level 9 costs 37 ms against 9 ms for a 4% better estimate that nobody acts
+    on, and Pages compresses on the fly at about level 6 anyway -- so 6 is both
+    the cheaper measurement and the more honest one.
     """
-    art = {g["id"]: g["art"] for g in games[:limit] if g.get("art")}
-    body = json.dumps(art, separators=(",", ":"), sort_keys=True).encode()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)
-    return len(art), len(gzip.compress(body, 9))
+    return len(gzip.compress(body, 6))
+
+
+def save_art(path, games) -> tuple[int, int]:
+    """Cover-art URLs keyed by product id. Returns `(rows, gzip_bytes)`.
+
+    The build-input file, which lives outside `public/` so it is never served.
+    The static pages read it to bake in `<img>` tags at no cost to the client,
+    and they look a game up by id -- hence a mapping rather than an array.
+    """
+    art = {g["id"]: g["art"] for g in games if g.get("art")}
+    body = json.dumps(art, separators=(",", ":"), sort_keys=True).encode()
+    return len(art), _write(path, body)
+
+
+def save_art_index(path, games) -> int:
+    """The served manifest: one entry per index row, in row order. Gzip bytes.
+
+    The explorer reads this against an index it already holds, so keying it by
+    product id repeats an identifier the browser has in front of it. Measured
+    on 2,000 live rows: `{id: url}` is 51.5 B gzipped an entry, this is 35.3 B
+    -- 640 KB against 439 KB over the catalogue, for one fetch either way.
+
+    The join is positional and there is nothing else to check it against, so
+    the array is always `len(games)` long, nulls included. It is written from
+    the same `games` list as index.json in the same publish step; that, and
+    only that, is what stops the two drifting. How many rows carry art is
+    `save_art`'s answer, not this one's.
+    """
+    body = json.dumps(
+        [u[len(ART_HOST):] if u and u.startswith(ART_HOST) else u or None
+         for u in (g.get("art") for g in games)],
+        separators=(",", ":"),
+    ).encode()
+    return _write(path, body)
 
 
 def save(path, body: bytes, packed: bytes) -> None:
-    """index.json plus a precompressed .gz sidecar."""
+    """index.json plus a precompressed .gz sidecar.
+
+    Not `_write`: this one stores the compressed bytes rather than measuring
+    them, so it takes the level-9 artifact `render` already produced.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)

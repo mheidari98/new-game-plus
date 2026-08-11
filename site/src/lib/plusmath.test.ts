@@ -92,3 +92,41 @@ describe('evaluate', () => {
     expect(evaluate(list, tier('extra'))).toEqual(evaluate(list, tier('extra')));
   });
 });
+
+describe('what the list costs', () => {
+  // The verdict answers "is the subscription worth it". These answer the
+  // question people ask next, which is "so what am I actually spending".
+  const list = () => [
+    pick({ id: 'a', plus_extra: true, price_cents: 3999 }),
+    pick({ id: 'b', price_cents: 4999 }),
+    pick({ id: 'c', plus_extra: true, price_cents: 2999 }),
+  ];
+
+  it('totals every game on the list at today s price', () => {
+    expect(evaluate(list(), tier('extra')).listCents).toBe(11997);
+  });
+
+  it('splits that total into covered and still-to-buy', () => {
+    const out = evaluate(list(), tier('extra'));
+    expect(out.coveredCents).toBe(6998);
+    expect(out.uncoveredCents).toBe(4999);
+  });
+
+  it('counts a free game as zero rather than dropping it', () => {
+    const out = evaluate([pick({ price_cents: 0 })], tier('extra'));
+    expect(out.listCents).toBe(0);
+    expect(out.uncovered).toHaveLength(1);
+  });
+
+  it('is zero on an empty list', () => {
+    const out = evaluate([], tier('extra'));
+    expect(out.listCents).toBe(0);
+    expect(out.uncoveredCents).toBe(0);
+  });
+
+  it('moves a game between the halves when the tier changes', () => {
+    const classics = [pick({ plus_classics: true, price_cents: 1999 })];
+    expect(evaluate(classics, tier('extra')).uncoveredCents).toBe(1999);
+    expect(evaluate(classics, tier('premium')).coveredCents).toBe(1999);
+  });
+});

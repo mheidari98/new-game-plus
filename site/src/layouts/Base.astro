@@ -1,6 +1,16 @@
 ---
 const { title, tagline } = Astro.props;
 const base = import.meta.env.BASE_URL;
+
+// Two destinations, so "which one am I on" is a comparison rather than a
+// router. `base` always ends in a slash -- astro.config.mjs normalises it --
+// and Astro serves `/x/` and `/x` for the same page, hence the trimmed compare.
+const trim = (path: string) => path.replace(/\/+$/, '');
+const here = trim(Astro.url.pathname);
+const TABS = [
+  { href: base, label: 'Explore' },
+  { href: `${base}plus/`, label: 'Is PS+ worth it?' },
+];
 ---
 <html lang="en">
 <head>
@@ -23,26 +33,28 @@ const base = import.meta.env.BASE_URL;
     .brand { font-weight: 700; letter-spacing: -0.02em; }
     header nav a:not(.brand) { color: var(--muted); font-size: 0.95rem; }
     header nav a:not(.brand):hover { color: var(--accent); }
+    /* Two tabs, so which one you are on has to be visible without counting.
+       Underline rather than colour alone: colour is not available to every
+       reader, and aria-current already carries it for a screen reader. */
+    header nav a[aria-current=page] {
+      color: var(--fg); font-weight: 600;
+      box-shadow: inset 0 -2px 0 var(--accent);
+    }
     h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); line-height: 1.15; letter-spacing: -0.03em; margin: 2rem 0 0.5rem; }
     .lede { color: var(--muted); font-size: 1.1rem; max-width: 46rem; }
     footer { border-top: 1px solid var(--line); margin-top: 4rem; padding: 2rem 0; color: var(--muted); font-size: 0.9rem; }
     footer a { color: var(--accent); }
     code { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 0.1em 0.35em; font-size: 0.9em; }
 
-    /* Shared list and badge styles. Global, not per page: an island builds its
-       markup at runtime, and Astro's scoped styles only reach elements it
-       rendered itself. Pages override where they deliberately differ. */
+    /* Shared badge styles. Global, not per page: an island builds its markup
+       at runtime, and Astro's scoped styles only reach elements it rendered
+       itself. Pages override where they deliberately differ. */
     .note { color: var(--muted); font-size: 0.95rem; }
     .loading { color: var(--muted); }
     .free { color: var(--good); font-weight: 600; }
-    .meta { display: block; color: var(--muted); font-size: 0.85rem; }
-    .rows { padding-left: 1.2rem; }
-    .rows li { margin: 0.55rem 0; }
-    .rows a { color: inherit; text-decoration: none; font-weight: 600; }
-    .rows a:hover { color: var(--accent); text-decoration: underline; }
     .tag { border: 1px solid var(--line); border-radius: 999px;
            padding: 0.05em 0.5em; font-size: 0.78rem; margin-left: 0.35rem; }
-    .tag.in, .tag.low, .tag.good { border-color: var(--good); color: var(--good); }
+    .tag.in, .tag.good { border-color: var(--good); color: var(--good); }
     s { opacity: 0.6; }
 
     /* The focus ring is a token and is never removed. :where() keeps
@@ -81,16 +93,10 @@ const base = import.meta.env.BASE_URL;
 
     /* One game's page. Shared here rather than in either page, because the
        markup is rendered twice: prerendered for the popular games, in the
-       browser for the tail. */
-    /* Cover art. Every <img> carries width/height so the box is reserved
-       before the image lands and nothing shifts. Sizes are requested from the
-       CDN, not scaled down here -- a 400 KB asset shrunk in CSS is still
-       400 KB over the wire. */
-    .cardart { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px;
-               display: block; margin-bottom: 0.5rem; background: var(--line); }
-    .withart { display: flex; gap: 0.7rem; align-items: center; }
-    .thumb { width: 56px; height: 56px; flex: none; border-radius: 5px;
-             object-fit: cover; background: var(--line); }
+       browser for the tail. Every <img> carries width/height so the box is
+       reserved before the image lands and nothing shifts, and sizes are asked
+       of the CDN rather than scaled down here -- a 400 KB asset shrunk in CSS
+       is still 400 KB over the wire. */
     .gamepage .cover { float: right; width: 220px; max-width: 38%; height: auto;
                        aspect-ratio: 1; object-fit: cover; border-radius: 8px;
                        margin: 0 0 1rem 1.25rem; background: var(--line); }
@@ -122,11 +128,11 @@ const base = import.meta.env.BASE_URL;
   <a class="skip" href="#main">Skip to content</a>
   <header><div class="wrap"><nav>
     <a class="brand" href={base}>new-game-plus</a>
-    <a href={`${base}free/`}>Free games</a>
-    <a href={`${base}plus/`}>Is PS+ worth it?</a>
-    {/* /couch/ joins this when that route lands. Nav only ever points at
-        routes that exist. */}
-    <a href={`${base}explore/`}>Explore</a>
+    {TABS.map((tab) => (
+      <a href={tab.href} aria-current={here === trim(tab.href) ? 'page' : undefined}>
+        {tab.label}
+      </a>
+    ))}
     <button class="theme-toggle" id="theme-toggle" type="button">Theme</button>
   </nav></div></header>
   <main class="wrap" id="main" tabindex="-1"><slot /></main>

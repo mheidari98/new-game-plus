@@ -56,6 +56,11 @@ export interface Verdict {
   uncovered: Pick[];
   /** What the covered games would cost you today, buying them outright. */
   coveredCents: number;
+  /** What the games the catalogue does not carry would cost you. Subscribing
+   *  does not make this go away, which is the part a yes/no verdict hides. */
+  uncoveredCents: number;
+  /** The whole list at today's prices. Always `covered + uncovered`. */
+  listCents: number;
   costCents: number;
   /** Positive means the subscription pays for itself against this list. */
   netCents: number;
@@ -78,11 +83,18 @@ export function evaluate(picks: Pick[], tier: Tier): Verdict {
   }
   // A free catalogue game contributes nothing, which needs no special case:
   // its price is zero.
-  const coveredCents = covered.reduce((n, g) => n + Math.max(0, g.price_cents), 0);
+  const total = (games: Pick[]) =>
+    games.reduce((n, g) => n + Math.max(0, g.price_cents), 0);
+  const coveredCents = total(covered);
+  const uncoveredCents = total(uncovered);
   return {
     covered,
     uncovered,
     coveredCents,
+    uncoveredCents,
+    // Summed from the same two halves rather than from `picks`, so the three
+    // figures the page prints cannot disagree with each other.
+    listCents: coveredCents + uncoveredCents,
     costCents: tier.yearlyCents,
     netCents: coveredCents - tier.yearlyCents,
     worthIt: coveredCents > tier.yearlyCents,

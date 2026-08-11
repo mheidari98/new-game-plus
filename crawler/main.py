@@ -29,7 +29,7 @@ from ngp.hltb import HowLongToBeat, SearchFailed
 from ngp.igdb import Igdb
 from ngp.net import HttpClient, workers_for
 from ngp.psplus import PlusIndex, fetch_all
-from ngp.publish import ART_HEAD_ROWS, render, save, save_art
+from ngp.publish import render, save, save_art, save_art_index
 from ngp.ratelimit import AdaptiveLimiter, RateLimitExceeded
 from ngp.ratings import Metacritic
 from ngp.store import MAX_WINDOW, StoreClient, money_to_cents
@@ -152,7 +152,7 @@ def crawl(args):
             # bulk map, falling back to the product id so an unmapped row still
             # gets a stable key.
             cid = prod.get("_concept_id") or concept_of.get(prod["id"]) or prod["id"]
-            rows.setdefault(cid, {"concept_id": cid, "rank": rank, "product": prod})
+            _place(rows, cid, prod, rank)
         cache.upsert_concepts([
             {"concept_id": cid, "rank": r["rank"], "product_id": r["product"]["id"]}
             for cid, r in rows.items()
@@ -171,21 +171,27 @@ def crawl(args):
             # path. Concepts already in the deals set keep their deals rank --
             # they are the ones the site leads with.
             found, unreleased = catalogue_concepts(store, CATEGORIES["all_games"])
-            added = []
+            added, shadowed = [], 0
             for index, row in enumerate(found):
                 cid = row["_concept_id"]
-                if cid in rows:
-                    continue
-                rows[cid] = {"concept_id": cid, "rank": CATALOGUE_RANK_BASE + index,
-                             "product": row}
-                added.append(rows[cid])
+                # A deals SKU may already have claimed this concept while the
+                # catalogue grid knows a different product under it -- the "It
+                # Takes Two" case, where the deals row is "Hazelight Bundle" at
+                # 67% off and the concept's own product is the game at $39.99.
+                # _place keeps both; skipping made the game unsearchable.
+                placed = _place(rows, cid, row, CATALOGUE_RANK_BASE + index)
+                if placed == "row":
+                    added.append(rows[cid])
+                elif placed == "sibling":
+                    shadowed += 1
             cache.upsert_concepts([
                 {"concept_id": r["concept_id"], "rank": r["rank"],
                  "product_id": r["product"]["id"]} for r in added
             ])
-            log.info("catalogue: +%d concepts beyond the deals set, %d unreleased "
-                     "concepts skipped (no product to price or enrich)",
-                     len(added), unreleased)
+            log.info("catalogue: +%d concepts beyond the deals set, %d concepts whose "
+                     "own product a deals SKU had shadowed, %d unreleased concepts "
+                     "skipped (no product to price or enrich)",
+                     len(added), shadowed, unreleased)
 
         enriched, failed, matched, attempted = _enrich(
             store, Metacritic(http), cache, rows, args, workers)
@@ -225,10 +231,10 @@ def crawl(args):
     )
     save(REPO / args.out, body, packed)
     with_art, _ = save_art(REPO / args.art, games)
-    head_art, head_bytes = save_art(REPO / args.art_head, games, ART_HEAD_ROWS)
+    served_bytes = save_art_index(REPO / args.art_served, games)
     last_good.write_text(json.dumps({"game_count": len(games)}))
-    log.info("cover art: %d of %d games (%d served in the head manifest, %d B gzipped)",
-             with_art, len(games), head_art, head_bytes)
+    log.info("cover art: %d of %d games, all of them served (%d B gzipped)",
+             with_art, len(games), served_bytes)
 
     log.info("published %d games: %d B raw, %d B gzipped (%.0f%% of budget)",
              stats["count"], stats["raw_bytes"], stats["gzip_bytes"],
@@ -241,6 +247,31 @@ def crawl(args):
         for host, lim in limiters.items()))
     cache.close()
     return stats
+
+
+def _place(rows, cid, prod, rank) -> str:
+    """Put one product under its concept. Owns the row shape and the dedupe.
+
+    Sony sells several products under one concept, and the crawl meets them
+    through two different grids -- the deals grid and the catalogue sweep --
+    which is why this is called from two places and why it, rather than either
+    caller, decides what "already have it" means.
+
+    Returns what it did: `row` for a concept not seen before, `sibling` for
+    another purchasable SKU of a concept already held, `duplicate` for a
+    product already recorded (the same product can appear in both grids).
+    """
+    row = rows.get(cid)
+    if row is None:
+        rows[cid] = {"concept_id": cid, "rank": rank, "product": prod, "siblings": []}
+        return "row"
+    if prod["id"] in {row["product"]["id"], *(s["id"] for s in row["siblings"])}:
+        return "duplicate"
+    # "Baldur's Gate 3" and its Digital Deluxe Edition are separate prices with
+    # separate discounts. Dropping this published one and hid the other.
+    # Enrichment is still keyed by concept, so keeping it costs no requests.
+    row["siblings"].append(prod)
+    return "sibling"
 
 
 def _rows_from_concepts(concepts):
@@ -520,59 +551,88 @@ def _release_year(value):
 
 
 def _assemble(rows, cache, plus, weights, args):
-    """Join crawl output into publishable rows. No I/O beyond the cache."""
-    ttl, critic_ttl = args.ttl, args.critic_ttl
-    games = []
-    for cid, row in rows.items():
-        prod = row["product"]
-        price = prod.get("price") or {}
-        base_cents = money_to_cents(price.get("basePrice"))
-        price_cents = money_to_cents(price.get("discountedPrice"))
-        if base_cents is None or price_cents is None:
-            continue                      # "Unavailable"
+    """Join crawl output into publishable rows. No I/O beyond the cache.
 
+    One concept sells more than one product. Concept 234689 is "It Takes Two"
+    at $39.99 *and* "Hazelight Bundle" at 67% off, and the crawl meets the two
+    through different grids. Publishing one row per concept meant whichever
+    product arrived first spoke for the game: 758 priced products were
+    unreachable, and the site could not find "It Takes Two" because it was
+    listed as "Hazelight Bundle".
+
+    So a row publishes its primary product and every sibling, each with its own
+    name, price and discount, all sharing the one enrichment fetched for their
+    concept. Enrichment stays keyed by concept because that is what costs
+    requests; only publishing fans back out.
+    """
+    ttl, critic_ttl = args.ttl, args.critic_ttl
+    games, published = [], set()
+    for cid, row in rows.items():
         detail = cache.get("product", cid, ttl_days=ttl) or {}
         critic = cache.get("critic", cid, ttl_days=critic_ttl) or {}
         play = cache.get("playtime", cid, ttl_days=args.playtime_ttl) or {}
         editorial = cache.get("igdb", cid, ttl_days=args.igdb_ttl) or {}
-        member = plus.lookup(concept_id=cid, product_id=prod["id"])
         # None, not 0: the search response carries the metascore but not the
         # review count, and quality() shrinks an unknown depth conservatively.
         q = quality(critic.get("score"), None, detail.get("star_average"),
                     detail.get("star_count") or 0, weights)
-        discount = int(round((base_cents - price_cents) / base_cents * 100)) if base_cents else 0
 
-        games.append({
-            "id": prod["id"],
-            "name": detail.get("name") or prod.get("name") or "",
-            # Payload wins for display; the detail is the fallback for rows
-            # that came from a concept grid, which carries no platforms.
-            "platforms": sorted(prod.get("platforms") or detail.get("platforms") or []),
-            "price_cents": price_cents,
-            "base_cents": base_cents,
-            "discount_pct": discount,
-            "is_free": bool(price.get("isFree")),
-            "plus_extra": bool(member and member.in_extra),
-            "plus_classics": bool(member and member.in_classics),
-            "genres": detail.get("genres") or [],
-            "esrb": detail.get("esrb"),
-            "local_players": detail.get("local_players"),
-            "psvr2": detail.get("psvr2"),
-            "dualsense": bool(detail.get("dualsense")),
-            "release_year": _release_year(detail.get("release")),
-            "critic_score": critic.get("score"),
-            # HowLongToBeat first, IGDB's time-to-beat as the substitute. Both
-            # are best-effort and either may be absent.
-            "hours_main": play.get("hours_main") or editorial.get("hours_main"),
-            "splitscreen": editorial.get("splitscreen"),
-            "perspective": editorial.get("perspective"),
-            "quality": round(q.score, 1),
-            "discount_depth": round(discount_depth(discount, weights), 1),
-            "price_anchor": round(price_anchor(base_cents, price_cents, weights), 1),
-            "evidence": q.evidence,
-            # Not published in index.json -- see publish.save_art.
-            "art": detail.get("art"),
-        })
+        for prod in (row["product"], *row["siblings"]):
+            price = prod.get("price") or {}
+            base_cents = money_to_cents(price.get("basePrice"))
+            price_cents = money_to_cents(price.get("discountedPrice"))
+            if base_cents is None or price_cents is None:
+                continue                  # "Unavailable"
+            # `_place` dedupes within a concept; this catches the other case,
+            # where one product arrives under two concept keys because
+            # product_to_concept is built from two overlapping grids.
+            if prod["id"] in published:
+                continue
+            published.add(prod["id"])
+
+            member = plus.lookup(concept_id=cid, product_id=prod["id"])
+            discount = int(round((base_cents - price_cents) / base_cents * 100)) if base_cents else 0
+            # The detail call was made for the primary product, so its name
+            # describes that product alone. A sibling taking it renames every
+            # edition of a game after whichever one happened to be enriched.
+            primary = prod is row["product"]
+            name = (detail.get("name") if primary else None) or prod.get("name") or ""
+
+            games.append({
+                "id": prod["id"],
+                # Collapsed: the concept grid returns "It Takes Two  PS4™ &
+                # PS5™" with a double space, which renders as a gap.
+                "name": " ".join(name.split()),
+                # Payload wins for display; the detail is the fallback for rows
+                # that came from a concept grid, which carries no platforms.
+                "platforms": sorted(prod.get("platforms") or detail.get("platforms") or []),
+                "price_cents": price_cents,
+                "base_cents": base_cents,
+                "discount_pct": discount,
+                "is_free": bool(price.get("isFree")),
+                # Asked per product: a catalogue can carry the base game and
+                # not the bundle that contains it.
+                "plus_extra": bool(member and member.in_extra),
+                "plus_classics": bool(member and member.in_classics),
+                "genres": detail.get("genres") or [],
+                "esrb": detail.get("esrb"),
+                "local_players": detail.get("local_players"),
+                "psvr2": detail.get("psvr2"),
+                "dualsense": bool(detail.get("dualsense")),
+                "release_year": _release_year(detail.get("release")),
+                "critic_score": critic.get("score"),
+                # HowLongToBeat first, IGDB's time-to-beat as the substitute. Both
+                # are best-effort and either may be absent.
+                "hours_main": play.get("hours_main") or editorial.get("hours_main"),
+                "splitscreen": editorial.get("splitscreen"),
+                "perspective": editorial.get("perspective"),
+                "quality": round(q.score, 1),
+                "discount_depth": round(discount_depth(discount, weights), 1),
+                "price_anchor": round(price_anchor(base_cents, price_cents, weights), 1),
+                "evidence": q.evidence,
+                # Not published in index.json -- see publish.save_art.
+                "art": detail.get("art"),
+            })
     return games
 
 
@@ -640,7 +700,7 @@ def main(argv=None):
     p.add_argument("--out", default="site/public/index.json")
     # Outside public/ on purpose: build input, never served to a browser.
     p.add_argument("--art", default="site/src/art.json")
-    p.add_argument("--art-head", default="site/public/art-head.json")
+    p.add_argument("--art-served", default="site/public/art.json")
     p.add_argument("-v", "--verbose", action="count", default=0)
     args = p.parse_args(argv)
 

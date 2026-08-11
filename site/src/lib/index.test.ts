@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { artUrl, esc, esrbLabel, loadIndex, price } from './index';
+import { artUrl, esc, esrbLabel, loadIndex, price, resolveArt } from './index';
 
 describe('esc', () => {
   it('escapes the characters real store titles actually contain', () => {
@@ -101,5 +101,30 @@ describe('artUrl', () => {
     // The caller renders no image at all rather than a broken one.
     expect(artUrl(null, 200)).toBeNull();
     expect(artUrl(undefined, 200)).toBeNull();
+  });
+});
+
+describe('resolveArt', () => {
+  // The exact inverse of publish.save_art_index's strip. These two rules are
+  // written in different languages in different repos-worth of code, and
+  // nothing but this test holds them together.
+  it('puts back the host the served manifest strips', () => {
+    expect(resolveArt('vulcan/ap/rnd/202306/1219/abc.png')).toBe(
+      'https://image.api.playstation.com/vulcan/ap/rnd/202306/1219/abc.png',
+    );
+  });
+
+  it('leaves an entry that kept its scheme alone', () => {
+    // publish strips only a literal image.api.playstation.com prefix, so an
+    // asset on another host arrives whole. Bolting the host on would break it.
+    const other = 'https://gs2-sec.ww.prod.dl.playstation.net/x.png';
+    expect(resolveArt(other)).toBe(other);
+  });
+
+  it('is null for a row the crawl has no art for', () => {
+    // The array is positional, so a gap is a null rather than a missing key.
+    expect(resolveArt(null)).toBeNull();
+    expect(resolveArt(undefined)).toBeNull();
+    expect(resolveArt('')).toBeNull();
   });
 });

@@ -110,6 +110,18 @@ export const esrbLabel = (esrb: string | null): string | null =>
 export const artUrl = (url: string | null | undefined, size: number) =>
   url ? `${url}?w=${size}&h=${size}` : null;
 
+/** The host `publish.save_art_index` strips from every entry of the served
+ *  manifest, because repeating it 13,000 times is the one part of an art URL
+ *  gzip cannot help with. */
+const ART_HOST = 'https://image.api.playstation.com/';
+
+/** Undo that strip. Lives here rather than in the page because it is the exact
+ *  inverse of the crawler's rule and the two have to be read together: publish
+ *  strips only a literal ART_HOST prefix, so anything still carrying a scheme
+ *  was left whole deliberately and must not have a host bolted onto it. */
+export const resolveArt = (entry: string | null | undefined) =>
+  !entry ? null : entry.startsWith('http') ? entry : ART_HOST + entry;
+
 /** Fetch and decode the payload an island points at. Every island used to
  *  hand-roll this without a catch, so a failed fetch left "Loading…" up
  *  forever. Returns null once the element says so. */

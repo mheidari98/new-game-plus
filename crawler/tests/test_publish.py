@@ -11,7 +11,14 @@ import json
 import pytest
 
 from ngp.components import Weights
-from ngp.publish import GZIP_BUDGET_BYTES, build_index, render, save, save_art
+from ngp.publish import (
+    GZIP_BUDGET_BYTES,
+    build_index,
+    render,
+    save,
+    save_art,
+    save_art_index,
+)
 
 
 def row(i=0, **over):
@@ -181,15 +188,65 @@ class TestCoverArt:
         assert rows == 1
         assert list(json.loads(out.read_text())) == [row(1)["id"]]
 
-    def test_limit_takes_the_popularity_head(self, tmp_path):
-        # Rows arrive in popularity order, so a limit is a "most-browsed"
-        # slice. The served manifest exists because the full one is 428 KB.
-        out = tmp_path / "art-head.json"
-        rows, _ = save_art(out, [row(i, art=self.ART) for i in range(5)], limit=2)
-        assert rows == 2
-        assert list(json.loads(out.read_text())) == [row(0)["id"], row(1)["id"]]
-
     def test_save_art_creates_its_directory(self, tmp_path):
         out = tmp_path / "nested" / "art.json"
         save_art(out, [row(0, art=self.ART)])
+        assert out.exists()
+
+
+class TestServedArtManifest:
+    """The manifest the explorer fetches, which is a different problem.
+
+    The build-input file is keyed by product id because a static page looks a
+    game up by id. The served file is read row by row against an index the
+    browser already holds, so the keys are pure overhead: measured on 2,000
+    live rows, `{id: url}` is 51.5 B gzipped per entry and a positional array
+    is 35.3 B -- 640 KB against 439 KB across the catalogue. Same file, same
+    single fetch, a third fewer bytes.
+    """
+
+    HOST = "https://image.api.playstation.com/"
+    ART = HOST + "vulcan/ap/rnd/202306/1219/abc.png"
+
+    def test_positions_match_the_index_row_order(self, tmp_path):
+        # The array is joined to index.json by position and nothing else, so
+        # this is the whole contract. Both files are written from one `games`
+        # list in one publish step, which is what makes it safe.
+        out = tmp_path / "art.json"
+        save_art_index(out, [row(0, art=self.ART), row(1, art=None),
+                             row(2, art=self.ART)])
+        assert json.loads(out.read_text()) == [
+            "vulcan/ap/rnd/202306/1219/abc.png", None,
+            "vulcan/ap/rnd/202306/1219/abc.png"]
+
+    def test_length_always_equals_the_row_count(self, tmp_path):
+        # A short array silently shifts every cover after the gap onto the
+        # wrong game, which looks like working software.
+        out = tmp_path / "art.json"
+        games = [row(i, art=None if i % 2 else self.ART) for i in range(7)]
+        save_art_index(out, games)
+        assert len(json.loads(out.read_text())) == len(games)
+
+    def test_the_constant_host_is_stripped(self, tmp_path):
+        out = tmp_path / "art.json"
+        save_art_index(out, [row(0, art=self.ART)])
+        assert self.HOST not in out.read_text()
+
+    def test_a_url_on_another_host_is_kept_whole(self, tmp_path):
+        # Every one of 2,000 sampled assets was on image.api.playstation.com,
+        # but a stripped prefix that was never there produces a broken src.
+        # The client re-adds the host only to a value that has none.
+        out = tmp_path / "art.json"
+        other = "https://gs2-sec.ww.prod.dl.playstation.net/x.png"
+        save_art_index(out, [row(0, art=other)])
+        assert json.loads(out.read_text()) == [other]
+
+    def test_reports_the_gzipped_size(self, tmp_path):
+        # How many rows carry art is save_art's answer; this one only has to
+        # say what it costs to serve.
+        assert save_art_index(tmp_path / "art.json", [row(0, art=self.ART)]) > 0
+
+    def test_creates_its_directory(self, tmp_path):
+        out = tmp_path / "nested" / "art.json"
+        save_art_index(out, [row(0, art=self.ART)])
         assert out.exists()

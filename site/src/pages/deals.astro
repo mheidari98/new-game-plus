@@ -1,15 +1,6 @@
 ---
-// /deals/ was the explorer's old name. Kept as a redirect because the URL is
-// linked from the README and from anything anyone has already shared.
+// /deals/ was the explorer's first name, and is linked from the README.
+import Redirect from '../layouts/Redirect.astro';
 const base = import.meta.env.BASE_URL;
-const target = `${base}explore/`;
 ---
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta http-equiv="refresh" content={`0; url=${target}`} />
-  <link rel="canonical" href={target} />
-  <title>Moved to Explore</title>
-</head>
-<body><p>This page is now at <a href={target}>Explore</a>.</p></body>
-</html>
+<Redirect to={base} note="This page is now the front page." />
