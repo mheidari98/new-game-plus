@@ -9,16 +9,13 @@ const base = import.meta.env.BASE_URL;
   <title>{title}</title>
   <meta name="description" content={tagline} />
   <style is:global>
-    :root {
-      --bg: #fbfaf8; --fg: #17161a; --muted: #6b6875;
-      --line: #e5e2dd; --card: #fff; --accent: #2b59d9; --free: #0d7a4f;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-theme=light]) {
-        --bg: #131217; --fg: #eceaf0; --muted: #9d99a8;
-        --line: #2a2832; --card: #1b1a21; --accent: #8aa4ff; --free: #4ade9b;
-      }
-    }
+    @import '../styles/tokens.css';
+
+    /* --card and --free were the old names for --surface and --good. Aliased
+       rather than renamed at every call site in one go, so this commit stays
+       reviewable; the aliases go when the last page is ported. */
+    :root { --card: var(--surface); --free: var(--good); }
+
     * { box-sizing: border-box; }
     body {
       margin: 0; background: var(--bg); color: var(--fg);
@@ -50,8 +47,42 @@ const base = import.meta.env.BASE_URL;
     .rows a:hover { color: var(--accent); text-decoration: underline; }
     .tag { border: 1px solid var(--line); border-radius: 999px;
            padding: 0.05em 0.5em; font-size: 0.78rem; margin-left: 0.35rem; }
-    .tag.in, .tag.low { border-color: var(--free); color: var(--free); }
+    .tag.in, .tag.low, .tag.good { border-color: var(--good); color: var(--good); }
     s { opacity: 0.6; }
+
+    /* The focus ring is a token and is never removed. :where() keeps
+       specificity at zero so a page can restyle the element without having to
+       out-specify this rule and accidentally drop the ring. */
+    :where(a, button, input, select, summary, [tabindex]):focus-visible {
+      outline: var(--focus-ring) solid var(--accent);
+      outline-offset: 2px;
+      border-radius: var(--radius-sm);
+    }
+
+    /* Visible only once focused, so a keyboard user can jump the nav. */
+    .skip {
+      position: absolute; left: -9999px;
+      background: var(--surface); color: var(--fg);
+      border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 0.6rem 1rem; z-index: 10;
+    }
+    .skip:focus { left: 1rem; top: 1rem; }
+
+    /* Prices, scores, hours and player counts sit in columns, so figures must
+       not change width between rows. */
+    .num, table td, table th { font-variant-numeric: tabular-nums; }
+
+    .theme-toggle {
+      margin-left: auto; background: none; border: 1px solid var(--line);
+      color: var(--muted); border-radius: var(--radius); cursor: pointer;
+      font: inherit; font-size: 0.85rem; padding: 0.2rem 0.6rem;
+    }
+    .theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
+
+    .visually-hidden {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip-path: inset(50%); white-space: nowrap;
+    }
 
     /* One game's page. Shared here rather than in either page, because the
        markup is rendered twice: prerendered for the popular games, in the
@@ -94,13 +125,17 @@ const base = import.meta.env.BASE_URL;
   </style>
 </head>
 <body>
+  <a class="skip" href="#main">Skip to content</a>
   <header><div class="wrap"><nav>
     <a class="brand" href={base}>new-game-plus</a>
     <a href={`${base}free/`}>Free games</a>
     <a href={`${base}plus/`}>Is PS+ worth it?</a>
+    {/* Becomes /explore/ when that route lands; /couch/ joins it later. Nav
+        only ever points at routes that exist. */}
     <a href={`${base}deals/`}>Deals</a>
+    <button class="theme-toggle" id="theme-toggle" type="button">Theme</button>
   </nav></div></header>
-  <main class="wrap"><slot /></main>
+  <main class="wrap" id="main" tabindex="-1"><slot /></main>
   <footer><div class="wrap">
     <p>
       Prices from the US PlayStation Store, refreshed daily. Not affiliated with Sony.
@@ -112,5 +147,31 @@ const base = import.meta.env.BASE_URL;
       and shipped a PS+ calculator before this existed.
     </p>
   </div></footer>
+
+  <script>
+    import { nextTheme, resolveTheme, type Theme } from '../lib/theme';
+
+    const KEY = 'ngp:theme';
+    const read = () => {
+      try { return localStorage.getItem(KEY); } catch { return null; }   // private mode
+    };
+    const write = (theme: Theme) => {
+      try { localStorage.setItem(KEY, theme); } catch { /* private mode */ }
+    };
+
+    const button = document.getElementById('theme-toggle') as HTMLButtonElement;
+    let theme = resolveTheme(read(), matchMedia('(prefers-color-scheme: dark)').matches);
+
+    // The label names what a click will *do*, not the current state -- a button
+    // reading "Dark theme" while the page is dark is the classic ambiguity.
+    const apply = (next: Theme) => {
+      theme = next;
+      document.documentElement.dataset.theme = next;
+      button.textContent = next === 'dark' ? 'Light theme' : 'Dark theme';
+    };
+
+    apply(theme);
+    button.addEventListener('click', () => { const next = nextTheme(theme); write(next); apply(next); });
+  </script>
 </body>
 </html>
