@@ -1,0 +1,67 @@
+/* Every colour in the site is defined here and nowhere else.
+ *
+ * Light is the :root default so a browser that supports neither the media
+ * query nor [data-theme] still gets a readable page. The dark palette is
+ * declared twice -- once for the system preference, once for the explicit
+ * toggle -- and tokens.test.ts asserts the two blocks are identical, because
+ * a toggle that has silently drifted from the media query looks fine in every
+ * screenshot and wrong on exactly one user's machine.
+ *
+ * Contrast ratios are asserted in tokens.test.ts, not eyeballed. Every pair
+ * clears AA as written; the tightest is --warn on --bg in light mode at
+ * 5.68:1, so there is headroom but not a lot -- re-run the test before
+ * nudging any of these.
+ */
+:root {
+  color-scheme: light dark;
+
+  --bg: #fbfaf8;
+  --surface: #ffffff;
+  --surface-2: #f4f3f0;
+  --line: #e4e2dd;
+  --fg: #17161a;
+  --muted: #5f5c69;
+  --accent: #2b4fd8;
+  --on-accent: #ffffff;
+  --good: #0a6e46;
+  --warn: #8a5a00;
+
+  --radius: 8px;
+  --radius-sm: 4px;
+  --focus-ring: 2px;
+  --measure: 68ch;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 40px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) {
+    --bg: #0d0d12;
+    --surface: #16161d;
+    --surface-2: #1e1e27;
+    --line: #2a2a36;
+    --fg: #ecebf1;
+    --muted: #9b98a8;
+    --accent: #7fa0ff;
+    --on-accent: #0d0d12;
+    --good: #3ddc97;
+    --warn: #e0b25c;
+  }
+}
+
+:root[data-theme=dark] {
+  --bg: #0d0d12;
+  --surface: #16161d;
+  --surface-2: #1e1e27;
+  --line: #2a2a36;
+  --fg: #ecebf1;
+  --muted: #9b98a8;
+  --accent: #7fa0ff;
+  --on-accent: #0d0d12;
+  --good: #3ddc97;
+  --warn: #e0b25c;
+}
