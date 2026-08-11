@@ -1,0 +1,426 @@
+---
+import Base from '../layouts/Base.astro';
+const base = import.meta.env.BASE_URL;
+---
+<Base title="Explore every PS5 and PS4 game"
+      tagline="Filter by players on one console, price, PS+ status and more.">
+  <h1>Explore</h1>
+  <p class="lede">
+    Everything loads once, then filtering happens in your browser. The ranking is computed
+    here from published components — move the sliders and watch it change, then share the link.
+  </p>
+
+  <div id="app" data-src={`${base}index.json`} data-base={base}>
+    <p class="loading">Loading the catalogue…</p>
+  </div>
+
+  <!-- Global because the island builds this markup at runtime, where a scoped
+       style never reaches it. Only this page loads these rules. -->
+  <style is:global>
+    .explore { display: grid; gap: var(--space-lg); align-items: start; }
+    @media (min-width: 60rem) { .explore { grid-template-columns: 17rem 1fr; } }
+
+    .facets { background: var(--surface); border: 1px solid var(--line);
+              border-radius: var(--radius); padding: var(--space-md); }
+    @media (min-width: 60rem) { .facets { position: sticky; top: var(--space-md); } }
+    .facets h2, .facets summary { font-size: 0.75rem; text-transform: uppercase;
+              letter-spacing: 0.06em; color: var(--muted); margin: var(--space-md) 0 var(--space-sm);
+              cursor: default; }
+    .facets summary { cursor: pointer; }
+    .facets label { display: flex; gap: var(--space-sm); align-items: baseline;
+                    font-size: 0.9rem; padding: 0.15rem 0; }
+    .facets .count { margin-left: auto; color: var(--muted); font-size: 0.8rem;
+                     font-variant-numeric: tabular-nums; }
+    .facets .cover { color: var(--muted); font-size: 0.78rem; margin: 0.35rem 0 0; }
+    .facets input[type=search], .facets select { width: 100%; padding: 0.4rem 0.55rem;
+              font: inherit; font-size: 0.9rem; border: 1px solid var(--line);
+              border-radius: var(--radius-sm); background: var(--bg); color: var(--fg); }
+    .facets .fieldlabel { display: block; font-size: 0.75rem; text-transform: uppercase;
+              letter-spacing: 0.06em; color: var(--muted); margin-bottom: var(--space-xs); }
+
+    .presets { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin: var(--space-md) 0; }
+    .presets a { border: 1px solid var(--line); border-radius: 999px; padding: 0.25rem 0.75rem;
+                 font-size: 0.85rem; color: inherit; text-decoration: none; }
+    .presets a:hover { border-color: var(--accent); color: var(--accent); }
+    .presets a[aria-current=page] { background: var(--accent); color: var(--on-accent);
+                                    border-color: var(--accent); }
+
+    .chips { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+    .chips button { border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2);
+                    color: inherit; font: inherit; font-size: 0.8rem; cursor: pointer;
+                    padding: 0.15rem 0.6rem; }
+    .chips button:hover { border-color: var(--accent); color: var(--accent); }
+
+    .count { color: var(--muted); font-size: 0.9rem; margin: 0 0 var(--space-sm); }
+
+    /* border-collapse: collapse leaves collapsed borders behind when a sticky
+       header travels, so separate + a box-shadow rule instead. */
+    table.results { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.92rem; }
+    table.results thead th { position: sticky; top: 0; background: var(--surface);
+                             text-align: left; padding: var(--space-sm); z-index: 1;
+                             box-shadow: inset 0 -1px 0 var(--line); white-space: nowrap; }
+    table.results th button { background: none; border: 0; color: var(--muted); cursor: pointer;
+                              font: inherit; font-size: 0.75rem; text-transform: uppercase;
+                              letter-spacing: 0.06em; padding: 0; }
+    table.results th[aria-sort] button { color: var(--accent); font-weight: 700; }
+    table.results td { padding: var(--space-sm); border-bottom: 1px solid var(--line);
+                       vertical-align: top; }
+    table.results tbody tr:hover { background: var(--surface-2); }
+    /* Skips layout/paint for off-screen rows. `auto` makes the browser remember
+       each row's height, so the scrollbar does not jump. */
+    table.results tbody tr { content-visibility: auto; contain-intrinsic-size: auto 52px; }
+    table.results .right { text-align: right; }
+    table.results .title { color: inherit; text-decoration: none; font-weight: 600; }
+    table.results .title:hover { color: var(--accent); text-decoration: underline; }
+    .rowtags { display: block; margin-top: 0.15rem; }
+    .rowtags .tag { margin-left: 0; margin-right: 0.35rem; }
+    .compact table.results td { padding: 0.25rem var(--space-sm); }
+    .compact .rowtags { display: none; }
+
+    .toolbar { display: flex; align-items: baseline; gap: var(--space-md); flex-wrap: wrap; }
+    .toolbar .density { margin-left: auto; font-size: 0.85rem; color: var(--muted); }
+    .toolbar .density button { background: none; border: 1px solid var(--line); color: inherit;
+                               font: inherit; font-size: 0.8rem; cursor: pointer;
+                               border-radius: var(--radius-sm); padding: 0.1rem 0.5rem; }
+    .toolbar .density button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+
+    .sliders { display: grid; gap: 0.4rem; margin-top: var(--space-md); }
+    .sliders label { font-size: 0.85rem; color: var(--muted); display: block; }
+    .sliders input { width: 100%; }
+    .sliders.off { opacity: 0.5; }
+  </style>
+
+  <script>
+    import { esc, loadIndex, price } from '../lib/index';
+    import { gameUrl } from '../lib/detail';
+    import { applyFilters, coverage, facetCounts } from '../lib/filters';
+    import { finalScore } from '../lib/score';
+    import { SORT_LABELS, sortRows } from '../lib/sorting';
+    import { DEFAULTS, fromSearch, toSearch, type ExploreState } from '../lib/urlstate';
+
+    const app = document.getElementById('app')!;
+    const BASE = app.dataset.base!;
+    const YEAR = new Date().getFullYear();
+    const PAGE = 200;
+
+    const index = await loadIndex(app);
+    if (index) {
+      const { meta, rows } = index;
+      // Weights ship inside the payload and are never seeded with numbers
+      // here: a second copy is how the site and the crawler come to disagree.
+      const weights = meta.weights;
+      // Row order is popularity order and decides whether a game has a
+      // prerendered page, so the rank is captured before any sorting.
+      const rankOf = new Map(rows.map((r, i) => [r.id, i]));
+
+      let state: ExploreState = fromSearch(location.search);
+
+      /** A weight stays at the -1 sentinel until the user actually moves that
+       *  slider, and toSearch() omits negatives. That is what keeps an
+       *  unfiltered URL empty and lets a preset's href match exactly -- seeding
+       *  state.w from the payload instead would stamp ?wq=45&wd=30&wv=25 onto
+       *  every link the site produces. */
+      const effective = () => ({
+        quality: state.w.quality < 0 ? weights.final.quality : state.w.quality,
+        deal: state.w.deal < 0 ? weights.final.deal : state.w.deal,
+        value: state.w.value < 0 ? weights.final.value : state.w.value,
+      });
+
+      let shown = PAGE;
+      let density = (() => {
+        try { return localStorage.getItem('ngp:density') ?? 'comfortable'; } catch { return 'comfortable'; }
+      })();
+
+      const hours = coverage(rows, 'hours_main');
+      const genres = [...new Set(rows.flatMap((r) => r.genres))].sort();
+
+      const COLUMNS = ['name', 'price', 'off', 'score', 'quality', 'players', 'hours'] as const;
+
+      const FACETS = [
+        { key: 'price' as const, label: 'Price',
+          values: [['free', 'Free'], ['under5', 'Under $5'], ['under10', 'Under $10'],
+                   ['under20', 'Under $20'], ['under40', 'Under $40'], ['sale', 'On sale']] },
+        { key: 'players' as const, label: 'Players on one console',
+          values: [['2', '2 or more'], ['3', '3 or more'], ['4', '4 or more']] },
+        { key: 'plus' as const, label: 'PS Plus',
+          values: [['extra', 'In Extra'], ['classics', 'In Classics'], ['none', 'Not in PS+']] },
+        { key: 'platform' as const, label: 'Platform', values: [['PS5', 'PS5'], ['PS4', 'PS4']] },
+      ];
+
+      const ESRB_VALUES = [['ESRB_EVERYONE', 'Everyone'], ['ESRB_EVERYONE_10', 'Everyone 10+'],
+                          ['ESRB_TEEN', 'Teen'], ['ESRB_MATURE', 'Mature 17+']];
+
+      const PRESETS: [string, string][] = [
+        ['', 'Everything'],
+        ['players=2&price=under20', 'Couch co-op under $20'],
+        ['price=free&evidence=medium', 'Free and actually good'],
+        ['plus=extra', 'Already in PS+'],
+        ['price=sale&sort=off&evidence=medium', 'Big discount, high quality'],
+        ['sort=hours&dir=asc', 'Shortest first'],
+      ];
+
+      app.className = `explore ${density === 'compact' ? 'compact' : ''}`;
+      app.innerHTML = `
+        <aside class="facets" id="facets"></aside>
+        <div>
+          <div class="presets" id="presets"></div>
+          <div class="chips" id="chips"></div>
+          <div class="toolbar">
+            <p class="count" id="count" role="status"></p>
+            <span class="density">
+              <button type="button" data-density="comfortable">Comfortable</button>
+              <button type="button" data-density="compact">Compact</button>
+            </span>
+          </div>
+          <table class="results">
+            <caption class="visually-hidden">
+              Games matching your filters. Column headers with buttons sort the table.
+            </caption>
+            <thead><tr id="head"></tr></thead>
+            <tbody id="results"></tbody>
+          </table>
+          <p><button type="button" id="more">Show ${PAGE} more</button></p>
+        </div>`;
+
+      const el = (id: string) => document.getElementById(id)!;
+
+      // Safari throws SecurityError above 100 replaceState calls per 30 s and a
+      // slider drag fires `input` continuously, so URL writes are throttled.
+      // Rendering stays immediate; only the history write waits.
+      let pending = 0;
+      const syncUrl = () => {
+        clearTimeout(pending);
+        pending = window.setTimeout(() => {
+          const search = toSearch(state);
+          history.replaceState(null, '', search ? `?${search}` : location.pathname);
+        }, 310);
+      };
+
+      function renderHead() {
+        el('head').innerHTML = COLUMNS.map((column) => {
+          // Exactly one th carries aria-sort; the rest omit it entirely,
+          // because "none" is the ARIA default and only adds verbosity.
+          const sorted = state.sort === column;
+          const attr = sorted ? ` aria-sort="${state.desc ? 'descending' : 'ascending'}"` : '';
+          const arrow = sorted ? (state.desc ? ' ▼' : ' ▲') : '';
+          return `<th scope="col"${attr}${column === 'name' ? '' : ' class="right"'}>
+            <button type="button" data-sort="${column}">${esc(SORT_LABELS[column])}${arrow}</button>
+          </th>`;
+        }).join('');
+      }
+
+      function renderFacets() {
+        const groups = FACETS.map((facet) => {
+          const counts = facetCounts(rows, state, facet.key, facet.values.map(([v]) => v));
+          return `<h2>${esc(facet.label)}</h2>` + facet.values.map(([value, label]) => `
+            <label>
+              <input type="radio" name="${facet.key}" value="${esc(value)}"
+                     ${state[facet.key] === value ? 'checked' : ''} />
+              ${esc(label)}<span class="count">${counts.get(value)!.toLocaleString()}</span>
+            </label>`).join('');
+        }).join('');
+
+        el('facets').innerHTML = `
+          <label class="fieldlabel" for="q">Search games</label>
+          <input type="search" id="q" value="${esc(state.q)}"
+                 placeholder="${rows.length.toLocaleString()} games" />
+          ${groups}
+          <details><summary>Genre</summary>
+            <select id="genre">
+              <option value="">Any genre</option>
+              ${genres.map((g) => `<option${state.genre === g ? ' selected' : ''}>${esc(g)}</option>`).join('')}
+            </select>
+          </details>
+          <details><summary>Well reviewed</summary>
+            ${[[0, 'Any'], [60, '60 or better'], [75, '75 or better']].map(([v, label]) => `
+              <label><input type="radio" name="minQuality" value="${v}"
+                     ${state.minQuality === v ? 'checked' : ''} /> ${esc(label)}</label>`).join('')}
+            <p class="cover">Scored from store ratings and, where one exists, a critic score.
+               Playtime is known for only ${hours.known.toLocaleString()} of
+               ${hours.total.toLocaleString()} games, so it is a column you can sort by rather
+               than a filter.</p>
+          </details>
+          <details><summary>Age rating</summary>
+            ${ESRB_VALUES.map(([value, label]) => `
+              <label><input type="radio" name="esrb" value="${esc(value)}"
+                     ${state.esrb === value ? 'checked' : ''} /> ${esc(label)}</label>`).join('')}
+          </details>
+          <div class="sliders ${state.sort === 'score' ? '' : 'off'}" id="sliders">
+            <p class="cover">${state.sort === 'score'
+              ? 'These three weights drive the Score column.'
+              : `Sorting by ${esc(SORT_LABELS[state.sort])}, so these are not in use.`}</p>
+            ${(() => { const w = effective(); return ([['quality', 'Game quality'],
+                ['deal', 'Deal depth'], ['value', 'Value per dollar']] as const)
+              .map(([key, label]) => `
+              <label>${label} — ${Math.round(w[key] * 100)}
+                <input type="range" data-weight="${key}" min="0" max="100"
+                       value="${Math.round(w[key] * 100)}" />
+              </label>`).join(''); })()}
+          </div>`;
+      }
+
+      function renderChips() {
+        const active: [string, string][] = [];
+        for (const facet of FACETS) {
+          const value = state[facet.key] as string;
+          if (value) {
+            const label = facet.values.find(([v]) => v === value)?.[1] ?? value;
+            active.push([facet.key, `${facet.label}: ${label}`]);
+          }
+        }
+        if (state.genre) active.push(['genre', `Genre: ${state.genre}`]);
+        if (state.esrb) active.push(['esrb', `Rated: ${state.esrb.replace('ESRB_', '')}`]);
+        if (state.minQuality) active.push(['minQuality', `Quality ${state.minQuality}+`]);
+        if (state.q) active.push(['q', `“${state.q}”`]);
+
+        el('chips').innerHTML = active.length === 0 ? '' :
+          active.map(([key, label]) =>
+            `<button type="button" data-clear="${esc(key)}">${esc(label)} ✕</button>`).join('')
+          + '<button type="button" data-clear="all">Clear all</button>';
+      }
+
+      function render() {
+        // The sliders are the `final` weights, renormalised so they always sum
+        // to 1. Everything else in `weights` comes from index.json untouched.
+        const w = effective();
+        const total = w.quality + w.deal + w.value || 1;
+        const live = {
+          ...weights,
+          final: { quality: w.quality / total, deal: w.deal / total, value: w.value / total },
+        };
+
+        const filtered = applyFilters(rows, state);
+        const sorted = sortRows(filtered, state, live, rankOf, YEAR);
+        const page = sorted.slice(0, shown);
+
+        // Say what was cut. The old page reported the total and silently
+        // rendered 200 of it.
+        el('count').textContent =
+          `${sorted.length.toLocaleString()} games · showing ${page.length.toLocaleString()}` +
+          ` · sorted by ${SORT_LABELS[state.sort]}, ${state.desc ? 'high to low' : 'low to high'}`;
+
+        (el('more') as HTMLButtonElement).hidden = page.length >= sorted.length;
+
+        el('results').innerHTML = page.length === 0
+          ? `<tr><td colspan="${COLUMNS.length}" class="note">
+               No games match. Try clearing a filter above.</td></tr>`
+          : page.map((g) => `
+            <tr>
+              <td>
+                <a class="title" href="${esc(gameUrl(BASE, g.id, rankOf.get(g.id)!))}">${esc(g.name)}</a>
+                <span class="rowtags">
+                  ${g.plus_extra ? '<span class="tag good">PS+ Extra</span>' : ''}
+                  ${g.plus_classics ? '<span class="tag good">PS+ Classics</span>' : ''}
+                  ${(g.local_players ?? 0) >= 2 && (g.local_players ?? 0) <= 16
+                    ? `<span class="tag">${g.local_players}-player couch</span>` : ''}
+                  ${g.vs_historical_min === 100 ? '<span class="tag good">lowest we have recorded</span>' : ''}
+                  ${g.psvr2 ? `<span class="tag">PS VR2 ${esc(g.psvr2)}</span>` : ''}
+                </span>
+              </td>
+              <td class="right">${g.price_cents === 0
+                ? '<span class="free">Free</span>'
+                : `${price(g.price_cents)}${g.discount_pct > 0
+                    ? ` <s>${price(g.base_cents)}</s>` : ''}`}</td>
+              <td class="right">${g.discount_pct > 0 ? `−${g.discount_pct}%` : '—'}</td>
+              <td class="right">${Math.round(finalScore(g, live, { hasPlusExtra: state.hasPlus }, YEAR))}</td>
+              <td class="right">${Math.round(g.quality)}</td>
+              <td class="right">${(g.local_players ?? 0) > 0 && (g.local_players ?? 0) <= 16 ? g.local_players : '—'}</td>
+              <td class="right">${g.hours_main ? `${g.hours_main}h` : '—'}</td>
+            </tr>`).join('');
+
+        renderHead();
+        renderFacets();
+        renderChips();
+        el('presets').innerHTML = PRESETS.map(([search, label]) => `
+          <a href="?${search}"${toSearch(state) === search ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('');
+        syncUrl();
+      }
+
+      const reset = () => { shown = PAGE; };
+
+      el('head').addEventListener('click', (e) => {
+        const button = (e.target as HTMLElement).closest('button');
+        if (!button?.dataset.sort) return;
+        const column = button.dataset.sort;
+        // Clicking the active column flips direction; a new column starts
+        // descending, which is what "best first" means for every column here
+        // except name.
+        state = state.sort === column
+          ? { ...state, desc: !state.desc }
+          : { ...state, sort: column, desc: column !== 'name' };
+        reset();
+        // A sort change is a discrete commit, so Back should walk to it.
+        history.pushState(null, '', `?${toSearch(state)}`);
+        render();
+      });
+
+      let typing = 0;
+      el('facets').addEventListener('input', (e) => {
+        const target = e.target as HTMLInputElement;
+        if (target.id === 'q') {
+          clearTimeout(typing);
+          const value = target.value;
+          typing = window.setTimeout(() => {
+            state = { ...state, q: value }; reset(); render();
+            (document.getElementById('q') as HTMLInputElement)?.focus();
+          }, 200);
+          return;
+        }
+        if (target.dataset.weight) {
+          const key = target.dataset.weight as 'quality' | 'deal' | 'value';
+          state = { ...state, w: { ...state.w, [key]: Number(target.value) / 100 } };
+          render();
+        }
+      });
+
+      el('facets').addEventListener('change', (e) => {
+        const target = e.target as HTMLInputElement | HTMLSelectElement;
+        if (target.id === 'genre') state = { ...state, genre: target.value };
+        else if (target.name === 'minQuality') state = { ...state, minQuality: Number(target.value) };
+        else if (target.name === 'esrb') state = { ...state, esrb: target.value };
+        else if (target.name) state = { ...state, [target.name]: target.value } as ExploreState;
+        else return;
+        reset();
+        history.pushState(null, '', `?${toSearch(state)}`);
+        render();
+      });
+
+      el('chips').addEventListener('click', (e) => {
+        const button = (e.target as HTMLElement).closest('button');
+        const key = button?.dataset.clear;
+        if (!key) return;
+        state = key === 'all'
+          ? { ...DEFAULTS, w: state.w, sort: state.sort, desc: state.desc }
+          : { ...state, [key]: key === 'minQuality' ? 0 : '' } as ExploreState;
+        reset();
+        history.pushState(null, '', `?${toSearch(state)}`);
+        render();
+      });
+
+      app.addEventListener('click', (e) => {
+        const button = (e.target as HTMLElement).closest('button');
+        const choice = button?.dataset.density;
+        if (!choice) return;
+        density = choice;
+        try { localStorage.setItem('ngp:density', choice); } catch { /* private mode */ }
+        app.className = `explore ${density === 'compact' ? 'compact' : ''}`;
+        for (const b of app.querySelectorAll('[data-density]')) {
+          b.setAttribute('aria-pressed', String(b.getAttribute('data-density') === density));
+        }
+      });
+
+      el('more').addEventListener('click', () => { shown += PAGE; render(); });
+
+      addEventListener('popstate', () => {
+        state = fromSearch(location.search);
+        reset();
+        render();
+      });
+
+      render();
+      for (const b of app.querySelectorAll('[data-density]')) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-density') === density));
+      }
+    }
+  </script>
+</Base>

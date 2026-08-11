@@ -130,9 +130,9 @@ const base = import.meta.env.BASE_URL;
     <a class="brand" href={base}>new-game-plus</a>
     <a href={`${base}free/`}>Free games</a>
     <a href={`${base}plus/`}>Is PS+ worth it?</a>
-    {/* Becomes /explore/ when that route lands; /couch/ joins it later. Nav
-        only ever points at routes that exist. */}
-    <a href={`${base}deals/`}>Deals</a>
+    {/* /couch/ joins this when that route lands. Nav only ever points at
+        routes that exist. */}
+    <a href={`${base}explore/`}>Explore</a>
     <button class="theme-toggle" id="theme-toggle" type="button">Theme</button>
   </nav></div></header>
   <main class="wrap" id="main" tabindex="-1"><slot /></main>
