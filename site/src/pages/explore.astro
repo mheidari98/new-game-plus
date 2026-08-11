@@ -209,6 +209,8 @@ const base = import.meta.env.BASE_URL;
         }).join('');
       }
 
+      // A <summary> is not a label, so the genre select carries its own
+      // aria-label -- without it a screen reader announces an unnamed combobox.
       function renderFacets() {
         const groups = FACETS.map((facet) => {
           const counts = facetCounts(rows, state, facet.key, facet.values.map(([v]) => v));
@@ -226,7 +228,7 @@ const base = import.meta.env.BASE_URL;
                  placeholder="${rows.length.toLocaleString()} games" />
           ${groups}
           <details><summary>Genre</summary>
-            <select id="genre">
+            <select id="genre" aria-label="Genre">
               <option value="">Any genre</option>
               ${genres.map((g) => `<option${state.genre === g ? ' selected' : ''}>${esc(g)}</option>`).join('')}
             </select>
