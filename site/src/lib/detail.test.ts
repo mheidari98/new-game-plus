@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detailHtml, gameUrl, PRERENDERED } from './detail';
+import { detailHtml, gameUrl, plusVerdict, PRERENDERED } from './detail';
 import type { Row } from './index';
 
 const game = (over: Partial<Row> = {}): Row => ({
@@ -31,6 +31,42 @@ const game = (over: Partial<Row> = {}): Row => ({
   ...over,
 });
 
+describe('plusVerdict', () => {
+  it('tells someone not to buy a game already in the Extra catalogue', () => {
+    const out = plusVerdict(game({ plus_extra: true, price_cents: 5999 }), 13499);
+    expect(out).toMatch(/already/i);
+    // It must not pitch a subscription at someone who is asking about a game
+    // the subscription already covers.
+    expect(out).not.toMatch(/costs? about/i);
+  });
+
+  it('says how many games like this one match a year of Extra', () => {
+    const out = plusVerdict(game({ plus_extra: false, price_cents: 6999 }), 13499);
+    expect(out).toMatch(/\$134\.99/);
+    expect(out).toMatch(/\b2 games\b/);
+  });
+
+  it('makes no subscription argument for a free game', () => {
+    // A free-to-play game gives a subscription no credit; an argument built on
+    // it would be a pitch dressed as arithmetic.
+    expect(plusVerdict(game({ price_cents: 0, is_free: true }), 13499)).toBe('');
+  });
+
+  it('says one game, not 1 games', () => {
+    expect(plusVerdict(game({ price_cents: 13499 }), 13499)).toMatch(/\b1 game\b/);
+  });
+});
+
+describe('price history honesty', () => {
+  it('says we lack observations, not that there were no discounts', () => {
+    // vs_historical_min is null on observation COUNT (< 4), not on absence of
+    // discounts, so "no discounts yet" would be a claim we cannot support.
+    const html = detailHtml(game({ vs_historical_min: null }), 2026);
+    expect(html).toMatch(/not enough recorded prices/i);
+    expect(html).not.toMatch(/no usable price history/i);
+  });
+});
+
 describe('gameUrl', () => {
   it('links popular games at their prerendered path', () => {
     expect(gameUrl('/ngp/', 'X', 0)).toBe('/ngp/game/X/');
@@ -56,9 +92,10 @@ describe('detailHtml', () => {
 
   it('says there is no price history rather than implying a floor', () => {
     // Our history starts when the project did; a blank here would read as
-    // "never been cheaper".
+    // "never been cheaper". The wording names the observation count rather
+    // than claiming there were no discounts -- see plusVerdict's neighbour test.
     const html = detailHtml(game(), 2026);
-    expect(html).toContain('no usable price history yet');
+    expect(html).toContain('not enough recorded prices yet to say');
   });
 
   it('says so for a row built without the history fields at all', () => {
@@ -66,7 +103,7 @@ describe('detailHtml', () => {
     // to null, so an === null check renders "NaN / 100" here.
     const html = detailHtml(game({ vs_historical_min: undefined, vs_typical_sale: undefined }), 2026);
     expect(html).not.toContain('NaN');
-    expect(html).toContain('no usable price history yet');
+    expect(html).toContain('not enough recorded prices yet to say');
   });
 
   it('spells the ESRB rating the same way the listing pages do', () => {

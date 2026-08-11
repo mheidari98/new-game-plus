@@ -30,6 +30,29 @@ export const gameUrl = (base: string, id: string, rank: number) =>
 const row = (label: string, value: string | null) =>
   value ? `<div class="fact"><dt>${esc(label)}</dt><dd>${value}</dd></div>` : '';
 
+/** US list price for 12 months of Extra, mirroring TIERS in plusmath.ts. One
+ *  literal rather than an import, because plusmath.ts models the whole tier
+ *  picker and this page only ever asks about Extra. */
+const PLUS_EXTRA_YEARLY_CENTS = 13499;
+
+/** "Should I buy this, or subscribe?" answered where the decision is made.
+ *
+ *  Uses today's price, because the honest counterfactual is what you would pay
+ *  instead of subscribing -- not a list price you were never going to pay. A
+ *  free game returns nothing: it gives a subscription no credit, and an
+ *  argument built on it would be a pitch rather than arithmetic.
+ */
+export function plusVerdict(game: Row, yearlyCents: number): string {
+  if (game.price_cents === 0) return '';
+  if (game.plus_extra) {
+    return 'You can already play this with PS Plus Extra — it is in the catalogue today. '
+      + 'Buying it only makes sense if you want to keep it after it rotates out.';
+  }
+  const games = Math.ceil(yearlyCents / game.price_cents);
+  return `At ${price(game.price_cents)}, ${games} game${games === 1 ? '' : 's'} like this `
+    + `costs about what a year of PS Plus Extra does (${price(yearlyCents)}).`;
+}
+
 const EVIDENCE: Record<string, string> = {
   high: 'a critic score and a lot of player ratings',
   medium: 'one source, or player ratings alone',
@@ -77,6 +100,9 @@ export function detailHtml(
       ${row('PS VR2', game.psvr2 ? esc(game.psvr2) : null)}
     </dl>
 
+    ${plusVerdict(game, PLUS_EXTRA_YEARLY_CENTS)
+      ? `<p class="note">${plusVerdict(game, PLUS_EXTRA_YEARLY_CENTS)}</p>` : ''}
+
     <h2>Why it ranks where it does</h2>
     <dl class="facts">
       ${row('Quality', `${Math.round(game.quality)} / 100`)}
@@ -85,9 +111,9 @@ export function detailHtml(
       ${row('Discount depth', `${Math.round(game.discount_depth)} / 100`)}
       ${row('Money saved', `${Math.round(game.price_anchor)} / 100`)}
       ${row('Against its lowest recorded price', game.vs_historical_min == null
-        ? 'no usable price history yet' : `${Math.round(game.vs_historical_min)} / 100`)}
+        ? 'not enough recorded prices yet to say' : `${Math.round(game.vs_historical_min)} / 100`)}
       ${row('Against its typical sale price', game.vs_typical_sale == null
-        ? 'no usable price history yet' : `${Math.round(game.vs_typical_sale)} / 100`)}
+        ? 'not enough recorded prices yet to say' : `${Math.round(game.vs_typical_sale)} / 100`)}
     </dl>
     <p class="note">
       These are the published components. The final ranking is computed in your
