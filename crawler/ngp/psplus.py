@@ -1,21 +1,26 @@
-"""PlayStation Plus catalogue feeds (AEM endpoint behind the public PS+ page).
+"""PlayStation Plus catalogue membership.
 
-Every entry carries a conceptId *and* a productId, so matching against store
-products is exact -- no fuzzy title matching anywhere in this path.
+Extra and Classics come from the store's own product grid (categoryGridRetrieve
+-- the same GraphQL operation and pinned hash already used for
+deals/all_games/free_to_play in store.py), via the category ids
+`plus_extra`/`plus_classics` in categories.json. This replaced the AEM feed at
+GAMESLIST_URL below for those two tiers on 2026-09-22: that feed started
+truncating its answer to ~55 of ~500 entries on 2026-09-19 and never
+recovered, while the grid -- backed by the same live product database as
+pricing -- was unaffected throughout, discovered the same sanctioned way as
+every other category (a public browse page, not guessed).
 
-Tier mapping, from the page's own bundle:
-  plus-games-list      Extra Game Catalog
-  plus-classics-list   Premium Classics (disjoint from Extra)
-  plus-monthly-games-list  this month's Essential games
-  ubisoft-classics-list    a strict SUBSET of Extra -- never union it in,
-                           it double-counts 68 entries (+10.6%)
+Monthly Essentials has no store-category equivalent -- it is a rotating claim
+list, not a static catalogue -- so it still reads the AEM feed.
+
+Grid rows carry an exact productId but no conceptId. AEM rows carry both.
+PlusIndex copes with either shape; see its docstring.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
@@ -24,21 +29,19 @@ log = logging.getLogger(__name__)
 
 GAMESLIST_URL = "https://www.playstation.com/bin/imagic/gameslist"
 
+# Only Monthly is still read from here. Kept as a mapping (rather than a bare
+# URL) in case Extra or Classics ever has to fall back to the AEM feed again --
+# ubisoft-classics-list is a strict SUBSET of plus-games-list and must never be
+# unioned in if that happens; it double-counted 68 entries (+10.6%) last time.
 LISTS = {
-    "extra": "plus-games-list",
-    "classics": "plus-classics-list",
     "monthly": "plus-monthly-games-list",
 }
-
-
-class PlusFeedUnavailable(RuntimeError):
-    """The Extra catalogue could not be read. Never publish without it."""
 
 
 @dataclass(frozen=True)
 class PlusEntry:
     list_name: str
-    concept_id: str
+    concept_id: str | None
     product_id: str | None
     name: str
     devices: list
@@ -77,59 +80,86 @@ def parse_feed(payload, list_name) -> list[PlusEntry]:
     return out
 
 
-# The Extra feed 404s intermittently -- it went down on one US-runner crawl and
-# answered with 471 entries minutes later -- so it is retried here. net.py
-# cannot: a 404 anywhere else is a real absence, not a blip.
-EXTRA_ATTEMPTS = 4
-EXTRA_BACKOFF_SECONDS = 20
+def fetch_catalogue(store, category_id, list_name) -> list[PlusEntry]:
+    """Page a PS+ store category (categoryGridRetrieve) to exhaustion.
 
+    Rows carry an exact productId but no conceptId, so `concept_id` is left
+    None; PlusIndex buckets by product_id when it is absent (see its
+    docstring), and matching on an exact SKU is what this project already
+    prefers over matching on a concept.
 
-def fetch_all(http, locale="en-us", sleep=time.sleep) -> dict[str, list[PlusEntry]]:
-    """One request per list -- the endpoint ignores every batching attempt.
-
-    Raises if Extra cannot be read: an empty Extra marks the entire store as
-    not-in-PS+, which is worse than no answer.
+    Deliberately does not catch anything: a failure on page 2 must not
+    silently publish page 1's partial answer as if it were the whole
+    catalogue -- that undercounts the same way the truncated AEM feed did.
+    fetch_all is what decides how to react to a failure here.
     """
-    def fetch(category):
-        return http.get_json(
-            f"{GAMESLIST_URL}?locale={locale}&categoryList={category}",
+    entries, offset = [], 0
+    while True:
+        page = store.grid_page(category_id, offset=offset)
+        entries.extend(
+            PlusEntry(
+                list_name=list_name,
+                concept_id=None,
+                product_id=row["id"],
+                name=row.get("name") or "",
+                # Order is not normalised upstream, same as the AEM feed.
+                devices=sorted(row.get("platforms") or []),
+                release_date=None,
+            )
+            for row in page.products
+        )
+        offset += len(page.products)
+        if page.is_last or not page.products:
+            break
+    return entries
+
+
+def fetch_all(http, store, *, extra_category_id, classics_category_id,
+              locale="en-us") -> dict[str, list[PlusEntry]]:
+    """Extra and Classics from the store grid, Monthly from the AEM feed.
+
+    Nothing here raises. A source that fails or comes back thin publishes
+    empty (or whatever partial answer another source failing does not
+    affect); resolve() is what decides whether the result is too little to
+    trust and needs the last-good snapshot instead.
+    """
+    out = {}
+    for key, category_id in (("extra", extra_category_id), ("classics", classics_category_id)):
+        try:
+            out[key] = fetch_catalogue(store, category_id, key)
+        except Exception as exc:
+            log.warning("ps+ %s category unreadable, publishing it empty: %s", key, exc)
+            out[key] = []
+
+    try:
+        payload = http.get_json(
+            f"{GAMESLIST_URL}?locale={locale}&categoryList={LISTS['monthly']}",
             headers={"accept": "application/json"},
         )
-
-    out = {}
-    for key, category in LISTS.items():
-        if key != "extra":
-            try:
-                out[key] = parse_feed(fetch(category), key)
-            except Exception as exc:
-                # Nice to have, so no raise -- but an empty catalogue publishes
-                # every game as not-in-it, which is a confident wrong answer.
-                log.warning("ps+ %s list unreadable, publishing it empty: %s", key, exc)
-                out[key] = []
-            continue
-
-        problem = "came back empty"
-        for attempt in range(EXTRA_ATTEMPTS):
-            if attempt:
-                sleep(EXTRA_BACKOFF_SECONDS)
-            try:
-                out[key] = parse_feed(fetch(category), key)
-            except Exception as exc:
-                problem, out[key] = str(exc), []
-            if out[key]:
-                break
-        if not out[key]:
-            raise PlusFeedUnavailable(
-                f"Extra catalogue unreadable after {EXTRA_ATTEMPTS} attempts: {problem}")
+        out["monthly"] = parse_feed(payload, "monthly")
+    except Exception as exc:
+        # Nice to have, so no raise -- but an empty catalogue publishes every
+        # game as not-in-it, which is a confident wrong answer were it load
+        # bearing. It logs instead so a moved URL is still visible.
+        log.warning("ps+ monthly list unreadable, publishing it empty: %s", exc)
+        out["monthly"] = []
     return out
 
 
 class PlusIndex:
     """Exact-id lookup over the catalogues.
 
-    conceptId is NOT unique within a feed (18 conceptIds cover 38 Extra
-    entries, e.g. the TimeSplitters trilogy), so entries are bucketed.
-    productId is unique.
+    conceptId is NOT unique within an AEM feed (18 conceptIds cover 38 Extra
+    entries, e.g. the TimeSplitters trilogy), so entries are bucketed rather
+    than keyed 1:1. productId is unique everywhere.
+
+    Grid-sourced entries (fetch_catalogue) have no conceptId at all. Bucketing
+    them under a shared `None` key would collapse extra_count to 1 regardless
+    of how many products there really are -- exactly the truncation this
+    index exists to catch, self-inflicted. So the bucket key falls back to a
+    namespaced product_id when concept_id is absent: still one bucket per
+    product, but a prefix that a real conceptId (Sony's are bare numbers) can
+    never collide with, however product ids happen to be shaped.
     """
 
     _PREFERENCE = {"extra": 0, "monthly": 1, "classics": 2}
@@ -139,7 +169,8 @@ class PlusIndex:
         self._by_product: dict[str, PlusEntry] = {}
         for entries in catalogues.values():
             for e in entries:
-                self._by_concept.setdefault(e.concept_id, []).append(e)
+                key = e.concept_id or f"product:{e.product_id}"
+                self._by_concept.setdefault(key, []).append(e)
                 if e.product_id:
                     self._by_product[e.product_id] = e
 
@@ -154,7 +185,8 @@ class PlusIndex:
 
     @property
     def extra_count(self) -> int:
-        """Concepts with at least one Extra (or Monthly) entry."""
+        """Distinct catalogue entries (concepts, or products where there is no
+        concept) with at least one Extra (or Monthly) membership."""
         return sum(any(e.in_extra for e in v) for v in self._by_concept.values())
 
     def __len__(self):
@@ -190,13 +222,13 @@ def _read_snapshot(path):
 def resolve(catalogues, snapshot_path, today: date, *, floor, max_age_days):
     """Pick the catalogue to publish against: (PlusIndex, stale_since | None).
 
-    fetch_all only refuses an *empty* Extra feed. On 2026-09-19 the feed began
-    answering 200 with 55 of ~500 entries, which is worse: it passes that check
-    and would mark most of Extra as not-in-PS+. So a live catalogue under
-    `floor` is replaced by the last healthy one, and the caller is told how old
-    it is. A degraded feed never overwrites the snapshot, and a snapshot that is
-    itself under the floor or past `max_age_days` is not trusted -- the live
-    index comes back and the publish guard blocks, as it always did.
+    fetch_all never raises -- a source that fails or comes back thin just
+    publishes less. So this is the only place that decides whether "less" is
+    too little: a live catalogue under `floor` is replaced by the last healthy
+    one, and the caller is told how old it is. A degraded source never
+    overwrites the snapshot, and a snapshot that is itself under the floor or
+    past `max_age_days` is not trusted -- the live index comes back and the
+    publish guard blocks, exactly as if there were no snapshot at all.
     """
     live = PlusIndex(catalogues)
     if live.extra_count >= floor:
@@ -210,13 +242,13 @@ def resolve(catalogues, snapshot_path, today: date, *, floor, max_age_days):
         age = (today - saved_on).days
         if old.extra_count >= floor and age <= max_age_days:
             log.warning(
-                "PS+ Extra feed returned %d concepts (floor %d); using the snapshot "
-                "from %s (%d days old, %d concepts)",
+                "PS+ Extra catalogue returned %d entries (floor %d); using the snapshot "
+                "from %s (%d days old, %d entries)",
                 live.extra_count, floor, saved_on, age, old.extra_count)
             return old, saved_on
-        log.warning("PS+ snapshot from %s is unusable (%d days old, %d concepts)",
+        log.warning("PS+ snapshot from %s is unusable (%d days old, %d entries)",
                     saved_on, age, old.extra_count)
     else:
-        log.warning("PS+ Extra feed returned %d concepts (floor %d) and there is "
+        log.warning("PS+ Extra catalogue returned %d entries (floor %d) and there is "
                     "no snapshot to fall back on", live.extra_count, floor)
     return live, None

@@ -1,8 +1,11 @@
 """PlayStation Plus catalogue feeds.
 
-Every entry carries both a conceptId and a productId, which makes matching
-against store products exact -- no fuzzy title matching anywhere in this path.
-Field shapes below were measured against the live feeds.
+Extra and Classics come from the store's own product grid (categoryGridRetrieve,
+the same operation and pinned hash used for deals/all_games/free_to_play);
+Monthly Essentials still comes from the AEM feed (bin/imagic/gameslist), which
+has no store-category equivalent since it is a rotating claim list, not a
+static catalogue. Grid rows carry an exact productId but no conceptId; AEM
+entries carry both. Field shapes below were measured against the live sources.
 """
 
 from datetime import date
@@ -11,12 +14,18 @@ import pytest
 
 from ngp.psplus import (
     LISTS,
-    PlusFeedUnavailable,
+    PlusEntry,
     PlusIndex,
     fetch_all,
+    fetch_catalogue,
     parse_feed,
     resolve,
 )
+from ngp.store import GridPage
+
+
+def product(id, name="A Game", platforms=("PS5",)):
+    return {"id": id, "name": name, "platforms": list(platforms)}
 
 
 def entry(concept_id, name="A Game", product_id=None, devices=("PS5",)):
@@ -100,108 +109,115 @@ class TestIndexLookup:
         assert idx.lookup(concept_id="10") is not None
 
 
-class TestUnion:
-    """ubisoft-classics-list is a strict SUBSET of plus-games-list. Unioning
-    it in double-counts 68 entries (+10.6% phantom catalogue)."""
+class TestFetchCatalogue:
+    """Extra and Classics are ordinary store categories now: paged with
+    categoryGridRetrieve like deals/all_games/free_to_play, to exhaustion."""
 
-    def test_ubisoft_list_is_excluded_from_the_catalogue(self):
-        assert "ubisoft" not in LISTS
+    class FakeStore:
+        def __init__(self, pages):
+            self.pages = pages      # list of GridPage, one per offset/1000
+            self.calls = []
 
-    def test_catalogue_lists_are_the_three_real_tiers(self):
-        assert set(LISTS) == {"extra", "classics", "monthly"}
+        def grid_page(self, category_id, *, offset=0, size=None):
+            self.calls.append((category_id, offset))
+            i = offset // 1000
+            return self.pages[i] if i < len(self.pages) else GridPage()
 
+    def test_reads_id_name_and_platforms_off_each_row(self):
+        store = self.FakeStore([GridPage(
+            products=[product("UP1", "Astro Bot", ("PS5", "PS4"))], is_last=True)])
+        got = fetch_catalogue(store, "cat1", "extra")
+        assert len(got) == 1
+        assert got[0].product_id == "UP1"
+        assert got[0].name == "Astro Bot"
+        assert got[0].list_name == "extra"
+        # Order is not normalised upstream -- same discipline as the AEM feed.
+        assert got[0].devices == ["PS4", "PS5"]
 
-class TestTransientFailure:
-    """Measured: the feed 404'd from a US runner on one run and returned 471
-    entries on the next, minutes later. An empty Extra catalogue would mark
-    every game as not-in-PS+, which is worse than no data at all -- so it must
-    fail loudly rather than degrade."""
+    def test_has_no_concept_id(self):
+        # The grid answers about products, not concepts -- see
+        # TestProductOnlyEntries for how PlusIndex copes with that.
+        store = self.FakeStore([GridPage(products=[product("UP1")], is_last=True)])
+        assert fetch_catalogue(store, "cat1", "extra")[0].concept_id is None
 
-    def test_empty_extra_catalogue_raises(self):
-        class DeadHttp:
-            def get_json(self, url, headers=None):
-                return []
-        with pytest.raises(PlusFeedUnavailable):
-            fetch_all(DeadHttp(), sleep=lambda _: None)
+    def test_pages_to_exhaustion(self):
+        page1 = GridPage(products=[product(f"UP{i}") for i in range(1000)], is_last=False)
+        page2 = GridPage(products=[product("UP1000")], is_last=True)
+        store = self.FakeStore([page1, page2])
+        got = fetch_catalogue(store, "cat1", "extra")
+        assert len(got) == 1001
+        assert store.calls == [("cat1", 0), ("cat1", 1000)]
 
-    def test_transient_error_on_extra_raises(self):
-        class BrokenHttp:
-            def get_json(self, url, headers=None):
-                raise RuntimeError("HTTP 404")
-        with pytest.raises(PlusFeedUnavailable):
-            fetch_all(BrokenHttp(), sleep=lambda _: None)
+    def test_a_single_page_stops_without_a_second_request(self):
+        store = self.FakeStore([GridPage(products=[product("UP1")], is_last=True)])
+        fetch_catalogue(store, "cat1", "extra")
+        assert store.calls == [("cat1", 0)]
 
-    def test_a_missing_optional_list_does_not_raise(self):
-        # Classics and Monthly are nice to have; Extra is load-bearing.
-        class PartialHttp:
-            def get_json(self, url, headers=None):
-                if "plus-games-list" in url:
-                    return feed(entry(1), entry(2))
+    def test_a_failure_mid_page_does_not_publish_a_partial_answer(self):
+        # A category that dies on page 2 must not silently return page 1's
+        # partial list as if it were the whole catalogue -- that undercounts
+        # exactly like the truncated AEM feed did.
+        class DyingStore:
+            def grid_page(self, category_id, *, offset=0, size=None):
+                if offset == 0:
+                    return GridPage(products=[product("UP1")], is_last=False)
                 raise RuntimeError("HTTP 500")
-        got = fetch_all(PartialHttp(), sleep=lambda _: None)
-        assert len(got["extra"]) == 2
-        assert got["classics"] == []
+        with pytest.raises(RuntimeError):
+            fetch_catalogue(DyingStore(), "cat1", "extra")
 
-    def test_a_missing_optional_list_is_logged(self, caplog):
-        # Silently empty Classics publishes every game as not-in-Classics,
-        # which is a confident wrong answer. A moved URL must be visible.
-        class PartialHttp:
-            def get_json(self, url, headers=None):
-                if "plus-games-list" in url:
-                    return feed(entry(1))
-                raise RuntimeError("HTTP 404")
+
+class TestFetchAll:
+    """Nothing here raises. resolve() is what decides whether a thin or empty
+    catalogue is too little to trust (see TestDegradedFeedFallback below) --
+    fetch_all's job is just to try each source, log what failed, and hand
+    back whatever it has."""
+
+    class OkStore:
+        def grid_page(self, category_id, *, offset=0, size=None):
+            return GridPage(products=[product("UP1")], is_last=True)
+
+    class BrokenStore:
+        def grid_page(self, category_id, *, offset=0, size=None):
+            raise RuntimeError("HTTP 500")
+
+    class MonthlyHttp:
+        def get_json(self, url, headers=None):
+            return feed(entry(9))
+
+    class DeadHttp:
+        def get_json(self, url, headers=None):
+            raise RuntimeError("HTTP 404")
+
+    def _fetch(self, http, store):
+        return fetch_all(http, store,
+                          extra_category_id="cat-extra", classics_category_id="cat-classics")
+
+    def test_extra_and_classics_come_from_their_own_categories(self):
+        got = self._fetch(self.MonthlyHttp(), self.OkStore())
+        assert len(got["extra"]) == 1
+        assert len(got["classics"]) == 1
+        assert len(got["monthly"]) == 1
+
+    def test_a_broken_category_does_not_raise_and_publishes_empty(self):
+        got = self._fetch(self.MonthlyHttp(), self.BrokenStore())
+        assert got["extra"] == []
+        assert got["classics"] == []
+        assert len(got["monthly"]) == 1        # unaffected by the store failing
+
+    def test_a_dead_monthly_feed_does_not_raise_either(self):
+        got = self._fetch(self.DeadHttp(), self.OkStore())
+        assert got["monthly"] == []
+        assert len(got["extra"]) == 1          # unaffected by the AEM feed failing
+
+    def test_everything_failing_still_returns_cleanly(self):
+        assert self._fetch(self.DeadHttp(), self.BrokenStore()) == {
+            "extra": [], "classics": [], "monthly": []}
+
+    def test_failures_are_logged(self, caplog):
         with caplog.at_level("WARNING", logger="ngp.psplus"):
-            fetch_all(PartialHttp(), sleep=lambda _: None)
+            self._fetch(self.DeadHttp(), self.BrokenStore())
         logged = caplog.text
-        assert "classics" in logged and "monthly" in logged
-        assert "HTTP 404" in logged
-
-    def test_extra_is_asked_again_before_the_run_is_abandoned(self):
-        # A 404 here costs the whole crawl, and the feed has answered on the
-        # next try. net.py cannot do this: a 404 elsewhere is a real absence.
-        class FlakyHttp:
-            attempts = 0
-
-            def get_json(self, url, headers=None):
-                if "plus-games-list" not in url:
-                    return feed(entry(9))
-                FlakyHttp.attempts += 1
-                if FlakyHttp.attempts < 3:
-                    raise RuntimeError("HTTP 404")
-                return feed(entry(1))
-
-        got = fetch_all(FlakyHttp(), sleep=lambda _: None)
-        assert len(got["extra"]) == 1
-        assert FlakyHttp.attempts == 3
-
-    def test_an_empty_extra_response_is_retried_too(self):
-        # 200-with-nothing is the same outage wearing a different status.
-        class EmptyThenFull:
-            attempts = 0
-
-            def get_json(self, url, headers=None):
-                if "plus-games-list" not in url:
-                    return feed(entry(9))
-                EmptyThenFull.attempts += 1
-                return [] if EmptyThenFull.attempts < 2 else feed(entry(1))
-
-        got = fetch_all(EmptyThenFull(), sleep=lambda _: None)
-        assert len(got["extra"]) == 1
-
-    def test_the_optional_lists_are_not_retried(self):
-        # Spending retries on data the run does not need is just load.
-        class ClassicsDown:
-            attempts = 0
-
-            def get_json(self, url, headers=None):
-                if "plus-games-list" in url:
-                    return feed(entry(1))
-                ClassicsDown.attempts += 1
-                raise RuntimeError("HTTP 500")
-
-        got = fetch_all(ClassicsDown(), sleep=lambda _: None)
-        assert got["classics"] == []
-        assert ClassicsDown.attempts == 2      # classics and monthly, once each
+        assert "extra" in logged and "classics" in logged and "monthly" in logged
 
 
 class TestTierFlags:
@@ -249,6 +265,44 @@ class TestExtraCount:
 
     def test_empty_catalogue_is_zero(self):
         assert PlusIndex({"extra": []}).extra_count == 0
+
+
+class TestProductOnlyEntries:
+    """Grid-sourced entries carry no conceptId (TestFetchCatalogue). PlusIndex
+    must still count and look them up correctly -- bucketing every one of
+    them under the same missing key would collapse extra_count to 1 and make
+    the publish guard block a perfectly healthy catalogue."""
+
+    @staticmethod
+    def entry_no_concept(product_id, list_name="extra", name="A Game"):
+        return PlusEntry(list_name=list_name, concept_id=None, product_id=product_id,
+                         name=name, devices=["PS5"], release_date=None)
+
+    def test_each_product_gets_its_own_bucket(self):
+        idx = PlusIndex({"extra": [
+            self.entry_no_concept("UP1"), self.entry_no_concept("UP2"),
+            self.entry_no_concept("UP3"),
+        ]})
+        assert idx.extra_count == 3
+
+    def test_lookup_by_product_id_still_works(self):
+        idx = PlusIndex({"extra": [self.entry_no_concept("UP1")]})
+        assert idx.lookup(product_id="UP1").in_extra is True
+
+    def test_a_product_id_never_matches_as_a_concept_id(self):
+        idx = PlusIndex({"extra": [self.entry_no_concept("UP1")]})
+        assert idx.lookup(concept_id="UP1") is None
+
+    def test_mixes_cleanly_with_concept_keyed_entries(self):
+        # Extra (grid, no conceptId) and Monthly (AEM, has conceptId) coexist
+        # in the same index without one kind interfering with the other.
+        idx = PlusIndex({
+            "extra": [self.entry_no_concept("UP1")],
+            "monthly": parse_feed(feed(entry(1)), "monthly"),
+        })
+        assert idx.extra_count == 2
+        assert idx.lookup(product_id="UP1").in_extra is True
+        assert idx.lookup(concept_id="1").in_extra is True
 
 
 class TestDegradedFeedFallback:

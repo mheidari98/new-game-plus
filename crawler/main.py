@@ -103,13 +103,15 @@ def crawl(args):
 
         log.info("fetching PS+ catalogues")
         plus, plus_stale_since = resolve(
-            fetch_all(http),
+            fetch_all(http, store,
+                      extra_category_id=CATEGORIES["plus_extra"],
+                      classics_category_id=CATEGORIES["plus_classics"]),
             # In the history checkout, not the crawl cache: it is committed to
             # the `data` branch, so it outlives cache eviction.
             REPO / args.history / "plus" / "last_good.json",
             datetime.now(timezone.utc).date(),
             floor=MIN_PLUS_EXTRA, max_age_days=MAX_PLUS_SNAPSHOT_AGE_DAYS)
-        log.info("PS+ index: %d concepts", len(plus))
+        log.info("PS+ index: %d entries", len(plus))
 
         log.info("enumerating deals")
         baseline = store.grid_page(CATEGORIES["deals"], size=1).total
