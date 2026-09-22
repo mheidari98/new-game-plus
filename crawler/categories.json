@@ -8,10 +8,14 @@
   "free_to_play": "4dfd67ab-4ed7-40b0-a937-a549aece13d0",
   "psvr2": "7b0ad209-dadd-4575-9e51-09ccc803deeb",
 
+  "_plus_comment": "Added 2026-09-22. Not from ngp/psplus.py's AEM feed (bin/imagic/gameslist) -- that endpoint started truncating its answer to ~55 of ~500 entries on 2026-09-19 and stayed broken. These are ordinary browse categories, same categoryGridRetrieve operation as everything else here, discovered the same way (public browse page, not guessed) and unaffected throughout.",
+  "plus_extra": "3a7006fe-e26f-49fe-87e5-4473d7ed0fb2",
+  "plus_classics": "8056ad23-7f30-485c-a628-b99f9d5aec5d",
+
   "_grid_kind": {
     "_comment": "PS5 and PS4 are asymmetric and code must handle both shapes.",
     "concept": ["all_games", "all_ps5_games", "free_to_play", "psvr2"],
-    "product": ["deals", "all_ps4_games"]
+    "product": ["deals", "all_ps4_games", "plus_extra", "plus_classics"]
   },
 
   "_measured_2026_08_10": {
@@ -21,5 +25,10 @@
     "all_ps4_games": "reports 10000 (clamped); 10385 via facet sums",
     "free_to_play": 252,
     "psvr2": 409
+  },
+
+  "_measured_2026_09_22": {
+    "plus_extra": 484,
+    "plus_classics": 174
   }
 }
