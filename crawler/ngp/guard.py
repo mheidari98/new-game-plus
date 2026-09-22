@@ -15,6 +15,10 @@ MIN_CATALOGUE_RATIO = 0.90
 # The Extra catalogue has sat around 471 entries. Anything near zero means the
 # feed failed rather than the catalogue emptying.
 MIN_PLUS_EXTRA = 100
+# A snapshot stands in for a degraded Extra feed for at most this long. Extra
+# and the monthly Essentials rotate roughly monthly, so beyond that the
+# snapshot is wrong about enough games that blocking is the honest answer.
+MAX_PLUS_SNAPSHOT_AGE_DAYS = 30
 MAX_ENRICHMENT_FAILURE_RATIO = 0.20
 
 
