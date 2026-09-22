@@ -37,7 +37,7 @@ _DICTED = ["genres", "esrb", "platforms", "psvr2", "evidence"]
 _MULTI = {"genres", "platforms"}      # lists per row; the rest are single values
 
 
-def build_index(games, weights, generated_at=None) -> dict:
+def build_index(games, weights, generated_at=None, plus_stale_since=None) -> dict:
     cols = {name: [g.get(name) for g in games] for name in _SCALARS}
     dicts = {}
 
@@ -62,26 +62,26 @@ def build_index(games, weights, generated_at=None) -> dict:
         cols[field] = encoded
         dicts[field] = vocabulary
 
-    return {
-        "meta": {
-            "count": len(games),
-            "generated_at": generated_at,
-            # Copied verbatim: the browser reads weights from here, never from
-            # its own constant, so the two cannot drift.
-            "weights": weights.as_dict(),
-        },
-        "dicts": dicts,
-        "cols": cols,
+    meta = {
+        "count": len(games),
+        "generated_at": generated_at,
+        # Copied verbatim: the browser reads weights from here, never from
+        # its own constant, so the two cannot drift.
+        "weights": weights.as_dict(),
     }
+    if plus_stale_since:
+        # Present only when the PS+ flags are a snapshot, not today's feed.
+        meta["plus_stale_since"] = plus_stale_since.isoformat()
+    return {"meta": meta, "dicts": dicts, "cols": cols}
 
 
-def render(games, weights, generated_at=None) -> tuple[bytes, bytes, dict]:
+def render(games, weights, generated_at=None, plus_stale_since=None) -> tuple[bytes, bytes, dict]:
     """Serialise the index without writing it anywhere.
 
     Separate from `save` so the guard can check the real sizes and refuse
     before anything lands on disk: a stale correct site beats a fresh wrong one.
     """
-    body = json.dumps(build_index(games, weights, generated_at),
+    body = json.dumps(build_index(games, weights, generated_at, plus_stale_since),
                       separators=(",", ":")).encode()
     packed = gzip.compress(body, 9)
     return body, packed, {

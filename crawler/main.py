@@ -24,11 +24,16 @@ from ngp import history
 from ngp.cache import Cache
 from ngp.components import Weights, discount_depth, price_anchor, price_vs, quality
 from ngp.features import decode_features
-from ngp.guard import PublishBlocked, check_publishable
+from ngp.guard import (
+    MAX_PLUS_SNAPSHOT_AGE_DAYS,
+    MIN_PLUS_EXTRA,
+    PublishBlocked,
+    check_publishable,
+)
 from ngp.hltb import HowLongToBeat, SearchFailed
 from ngp.igdb import Igdb
 from ngp.net import HttpClient, workers_for
-from ngp.psplus import PlusIndex, fetch_all
+from ngp.psplus import fetch_all, resolve
 from ngp.publish import render, save, save_art, save_art_index
 from ngp.ratelimit import AdaptiveLimiter, RateLimitExceeded
 from ngp.ratings import Metacritic
@@ -97,7 +102,13 @@ def crawl(args):
         store = StoreClient(http)
 
         log.info("fetching PS+ catalogues")
-        plus = PlusIndex(fetch_all(http))
+        plus, plus_stale_since = resolve(
+            fetch_all(http),
+            # In the history checkout, not the crawl cache: it is committed to
+            # the `data` branch, so it outlives cache eviction.
+            REPO / args.history / "plus" / "last_good.json",
+            datetime.now(timezone.utc).date(),
+            floor=MIN_PLUS_EXTRA, max_age_days=MAX_PLUS_SNAPSHOT_AGE_DAYS)
         log.info("PS+ index: %d concepts", len(plus))
 
         log.info("enumerating deals")
@@ -218,7 +229,8 @@ def crawl(args):
                     "but check the crawl did not re-key every product", written)
 
     # Render, then check, then write. Nothing degraded reaches the disk.
-    body, packed, stats = render(games, weights, generated_at=now.isoformat())
+    body, packed, stats = render(games, weights, generated_at=now.isoformat(),
+                                 plus_stale_since=plus_stale_since)
     check_publishable(
         game_count=len(games),
         previous_game_count=previous,

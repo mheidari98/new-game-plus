@@ -5,6 +5,8 @@ against store products exact -- no fuzzy title matching anywhere in this path.
 Field shapes below were measured against the live feeds.
 """
 
+from datetime import date
+
 import pytest
 
 from ngp.psplus import (
@@ -13,6 +15,7 @@ from ngp.psplus import (
     PlusIndex,
     fetch_all,
     parse_feed,
+    resolve,
 )
 
 
@@ -246,3 +249,88 @@ class TestExtraCount:
 
     def test_empty_catalogue_is_zero(self):
         assert PlusIndex({"extra": []}).extra_count == 0
+
+
+class TestDegradedFeedFallback:
+    """Measured 2026-09-19: the Extra feed stopped 404ing and started answering
+    200 with 55 of ~500 entries, three runs in a row. Emptiness checks pass a
+    truncated catalogue, and publishing it marks ~90% of Extra as not-in-PS+.
+    So a catalogue under the floor is replaced by the last healthy one -- said
+    out loud via the stale date -- and never overwrites it."""
+
+    FLOOR = 3
+    MAX_AGE = 30
+    TODAY = date(2026, 9, 21)
+
+    @staticmethod
+    def catalogues(n_extra, first=1, classics=()):
+        return {
+            "extra": parse_feed(feed(*(entry(i) for i in range(first, first + n_extra))), "extra"),
+            "classics": parse_feed(feed(*(entry(i) for i in classics)), "classics"),
+            "monthly": [],
+        }
+
+    def run(self, live, path, today=None):
+        return resolve(live, path, today or self.TODAY,
+                       floor=self.FLOOR, max_age_days=self.MAX_AGE)
+
+    def test_healthy_feed_is_used_as_is_and_saved(self, tmp_path):
+        path = tmp_path / "plus" / "last_good.json"
+        index, stale_since = self.run(self.catalogues(5), path)
+        assert index.extra_count == 5
+        assert stale_since is None
+        assert path.exists()
+
+    def test_degraded_feed_falls_back_to_the_last_good_snapshot(self, tmp_path):
+        path = tmp_path / "last_good.json"
+        self.run(self.catalogues(6, classics=(100,)), path, today=date(2026, 9, 18))
+        index, stale_since = self.run(self.catalogues(2, first=900), path)
+        assert index.extra_count == 6
+        assert stale_since == date(2026, 9, 18)
+        # The snapshot answers exact lookups like the live feed does.
+        assert index.lookup(concept_id="1").in_extra is True
+        assert index.lookup(concept_id="100").in_classics is True
+        assert index.lookup(concept_id="900") is None
+
+    def test_degraded_feed_never_overwrites_the_snapshot(self, tmp_path):
+        path = tmp_path / "last_good.json"
+        self.run(self.catalogues(6), path, today=date(2026, 9, 18))
+        before = path.read_text()
+        self.run(self.catalogues(2, first=900), path)
+        assert path.read_text() == before
+
+    def test_degraded_feed_with_no_snapshot_is_returned_for_the_guard_to_block(self, tmp_path):
+        index, stale_since = self.run(self.catalogues(2), tmp_path / "missing.json")
+        assert index.extra_count == 2
+        assert stale_since is None
+
+    def test_a_snapshot_past_the_age_limit_is_not_trusted(self, tmp_path):
+        path = tmp_path / "last_good.json"
+        self.run(self.catalogues(6), path, today=date(2026, 8, 1))
+        index, stale_since = self.run(self.catalogues(2, first=900), path)
+        assert index.extra_count == 2
+        assert stale_since is None
+
+    def test_a_snapshot_exactly_at_the_age_limit_is_still_used(self, tmp_path):
+        path = tmp_path / "last_good.json"
+        self.run(self.catalogues(6), path, today=date(2026, 8, 22))
+        _, stale_since = self.run(self.catalogues(2, first=900), path)
+        assert stale_since == date(2026, 8, 22)
+
+    @pytest.mark.parametrize("junk", ["", "not json", "[]", '{"saved_on": "nope"}',
+                                      '{"saved_on": "2026-09-18", "catalogues": 5}'])
+    def test_an_unreadable_snapshot_counts_as_missing(self, tmp_path, junk):
+        path = tmp_path / "last_good.json"
+        path.write_text(junk)
+        index, stale_since = self.run(self.catalogues(2), path)
+        assert index.extra_count == 2
+        assert stale_since is None
+
+    def test_a_degraded_snapshot_is_never_used_as_a_fallback(self, tmp_path):
+        # Guards against a snapshot that was itself under the floor (e.g. one
+        # seeded by hand): falling back to it would just relabel the truncation.
+        path = tmp_path / "last_good.json"
+        path.write_text('{"saved_on": "2026-09-18", "catalogues": {"extra": []}}')
+        index, stale_since = self.run(self.catalogues(2), path)
+        assert index.extra_count == 2
+        assert stale_since is None

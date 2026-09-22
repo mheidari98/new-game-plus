@@ -13,9 +13,12 @@ Tier mapping, from the page's own bundle:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import date
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -156,3 +159,64 @@ class PlusIndex:
 
     def __len__(self):
         return len(self._by_concept)
+
+
+def _write_snapshot(path, catalogues, today: date) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "saved_on": today.isoformat(),
+        "catalogues": {k: [asdict(e) for e in v] for k, v in catalogues.items()},
+    }
+    # Replaced whole, so a run killed mid-write cannot leave half a snapshot.
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.replace(path)
+
+
+def _read_snapshot(path):
+    """(catalogues, saved_on) or None. Anything unreadable is None: a snapshot
+    is a convenience, and a bad one must not take the crawl down with it."""
+    try:
+        raw = json.loads(Path(path).read_text())
+        return (
+            {k: [PlusEntry(**e) for e in v] for k, v in raw["catalogues"].items()},
+            date.fromisoformat(raw["saved_on"]),
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def resolve(catalogues, snapshot_path, today: date, *, floor, max_age_days):
+    """Pick the catalogue to publish against: (PlusIndex, stale_since | None).
+
+    fetch_all only refuses an *empty* Extra feed. On 2026-09-19 the feed began
+    answering 200 with 55 of ~500 entries, which is worse: it passes that check
+    and would mark most of Extra as not-in-PS+. So a live catalogue under
+    `floor` is replaced by the last healthy one, and the caller is told how old
+    it is. A degraded feed never overwrites the snapshot, and a snapshot that is
+    itself under the floor or past `max_age_days` is not trusted -- the live
+    index comes back and the publish guard blocks, as it always did.
+    """
+    live = PlusIndex(catalogues)
+    if live.extra_count >= floor:
+        _write_snapshot(snapshot_path, catalogues, today)
+        return live, None
+
+    saved = _read_snapshot(snapshot_path)
+    if saved is not None:
+        old_catalogues, saved_on = saved
+        old = PlusIndex(old_catalogues)
+        age = (today - saved_on).days
+        if old.extra_count >= floor and age <= max_age_days:
+            log.warning(
+                "PS+ Extra feed returned %d concepts (floor %d); using the snapshot "
+                "from %s (%d days old, %d concepts)",
+                live.extra_count, floor, saved_on, age, old.extra_count)
+            return old, saved_on
+        log.warning("PS+ snapshot from %s is unusable (%d days old, %d concepts)",
+                    saved_on, age, old.extra_count)
+    else:
+        log.warning("PS+ Extra feed returned %d concepts (floor %d) and there is "
+                    "no snapshot to fall back on", live.extra_count, floor)
+    return live, None

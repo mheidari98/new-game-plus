@@ -83,6 +83,7 @@ jobs:
       # cap bounds each run, and the TTL cursor carries the rest forward, so
       # this warms over several days rather than in one long job.
       - name: Crawl
+        id: crawl
         run: |
           python crawler/main.py \
             ${{ github.event.inputs.backfill == 'false' && ' ' || '--backfill' }} \
@@ -91,13 +92,17 @@ jobs:
 
       # Before the site build: if the crawl produced nothing publishable the
       # run has already failed, and prices we did observe are still worth
-      # keeping. Nothing else can recover them.
+      # keeping. Nothing else can recover them -- so this runs after a failed
+      # crawl too (three days of prices were lost to a skipped step). The
+      # same commit carries plus/last_good.json, the PS+ snapshot the crawler
+      # falls back to when Sony's feed is truncated.
       - name: Publish price history
+        if: ${{ !cancelled() && steps.crawl.conclusion != 'skipped' }}
         working-directory: history
         run: |
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add prices
+          for d in prices plus; do [ -d "$d" ] && git add "$d"; done
           if git diff --cached --quiet; then
             echo "no price changes today"
           else
@@ -146,6 +151,10 @@ jobs:
             echo "### Published"
             echo "- index.json.gz: $gz bytes ($((gz * 100 / 819200))% of the 800 KiB budget)"
             echo "- $pages prerendered pages"
+            stale=$(python -c "import gzip,json; print(json.load(gzip.open('site/public/index.json.gz'))['meta'].get('plus_stale_since',''))")
+            if [ -n "$stale" ]; then
+              echo "- **PS+ membership is a snapshot from $stale**: Sony's Extra feed returned a truncated catalogue"
+            fi
             echo ""
             echo '### Price history'
             echo '```'
@@ -190,6 +199,8 @@ jobs:
 
           Usual causes, in order of likelihood:
           - catalogue shrank >10% (crawl truncated)
-          - PS+ Extra feed returned empty (it 404s intermittently)
+          - PS+ Extra feed returned empty or truncated (under 100 entries) and there was
+            no snapshot under 30 days old to fall back on. It has 404'd and it has
+            answered 200 with 55 of ~500 entries; check the count in the crawl log
           - a persisted-query hash went stale -- re-capture from DevTools, never guess"
           fi

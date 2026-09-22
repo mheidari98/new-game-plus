@@ -7,6 +7,7 @@ layout is not a style choice.
 
 import gzip
 import json
+from datetime import date
 
 import pytest
 
@@ -50,6 +51,22 @@ def row(i=0, **over):
 @pytest.fixture
 def weights():
     return Weights.defaults()
+
+
+class TestPlusStaleness:
+    """When the PS+ flags came from a snapshot instead of the live feed, the
+    index says since when, rather than presenting old membership as current."""
+
+    def test_meta_carries_the_snapshot_date_when_stale(self, weights):
+        idx = build_index([row(0)], weights, plus_stale_since=date(2026, 9, 18))
+        assert idx["meta"]["plus_stale_since"] == "2026-09-18"
+
+    def test_meta_has_no_such_key_when_the_feed_was_live(self, weights):
+        assert "plus_stale_since" not in build_index([row(0)], weights)["meta"]
+
+    def test_render_passes_it_through(self, weights):
+        body, _, _ = render([row(0)], weights, plus_stale_since=date(2026, 9, 18))
+        assert json.loads(body)["meta"]["plus_stale_since"] == "2026-09-18"
 
 
 class TestLayout:
